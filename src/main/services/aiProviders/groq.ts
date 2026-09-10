@@ -40,36 +40,43 @@ async function post(req: CompletionRequest, stream: boolean): Promise<Response> 
   return res
 }
 
+type Usage = { prompt_tokens?: number; completion_tokens?: number }
+
 /** Groq: OpenAI-compatible chat endpoint, prized for low latency (inline completions + voice turns). */
 export function createGroqProvider(): AiProvider {
   return {
     id: 'groq',
     label: 'Groq (gpt-oss)',
+    modelFor: () => MODEL,
     isConfigured: () => getApiKey().length > 0,
 
     async complete(req) {
       const res = await post(req, false)
-      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: Usage }
+      req.onUsage?.({ inputTokens: data.usage?.prompt_tokens ?? 0, outputTokens: data.usage?.completion_tokens ?? 0 })
       return data.choices?.[0]?.message?.content ?? ''
     },
 
     async stream(req, onDelta) {
       const res = await post(req, true)
       let full = ''
+      let usage: Usage | undefined
       await readSse(res, (data) => {
         if (data === '[DONE]') return
-        let evt: { choices?: Array<{ delta?: { content?: string } }> }
+        let evt: { choices?: Array<{ delta?: { content?: string } }>; usage?: Usage; x_groq?: { usage?: Usage } }
         try {
           evt = JSON.parse(data)
         } catch {
           return
         }
+        if (evt.x_groq?.usage || evt.usage) usage = evt.x_groq?.usage ?? evt.usage
         const delta = evt.choices?.[0]?.delta?.content
         if (delta) {
           full += delta
           onDelta(delta)
         }
       })
+      req.onUsage?.({ inputTokens: usage?.prompt_tokens ?? 0, outputTokens: usage?.completion_tokens ?? 0 })
       return full
     }
   }

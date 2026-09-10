@@ -137,8 +137,55 @@ export interface RunResult {
  */
 export type TtsEngine = 'webspeech' | 'edge' | 'kokoro'
 
+/** Anthropic model ids the UI offers. Haiku is the default because voice turns are frequent and cheap should be cheap. */
+export const ANTHROPIC_MODELS = {
+  haiku: 'claude-haiku-4-5-20251001',
+  sonnet: 'claude-sonnet-5'
+} as const
+
+/** Hard limits that protect the API balance. */
+export const COST_LIMITS = {
+  /** Messages of history sent with a turn (older ones are dropped, not summarised). */
+  historyMessages: 10,
+  /** Editor text beyond this is cut from the prompt (head + tail kept). */
+  maxCodeChars: 12_000,
+  /** More chat turns than this within 60 s trips the brake: calls refused, mic switched off. */
+  maxTurnsPerMinute: 8
+} as const
+
+/** One provider call, as recorded by main for the spend meter. Token counts come from the API when it reports them. */
+export interface UsageEvent {
+  at: number
+  provider: AiProviderId
+  model: string
+  kind: 'chat' | 'chip' | 'inline'
+  inputTokens: number
+  outputTokens: number
+  /** True when the provider didn't report usage and tokens were estimated from text length. */
+  estimated: boolean
+  costUsd: number
+}
+
+export interface UsageSummary {
+  /** This app session. */
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  sessionStart: number
+  /** Today (local date), including earlier sessions read back from usage.jsonl. */
+  todayCostUsd: number
+  todayCalls: number
+}
+
 export interface Settings {
   provider: AiProviderId
+  /** Master switch: when false no provider is ever called (chat, chips, ghost text all return a notice). */
+  aiEnabled: boolean
+  /** Anthropic model for chat/chips. */
+  chatModel: string
+  /** When today's estimated spend (all providers, from usage.jsonl) reaches this, every call is refused until raised. */
+  dailyBudgetUsd: number
   language: string
   guidedVoice: boolean
   /** Copilot-style inline completions in the editor. */
@@ -204,6 +251,10 @@ export const IPC = {
   aiChip: 'ai:chip',
   aiInlineComplete: 'ai:inlineComplete',
   aiProviderStatus: 'ai:providerStatus',
+  aiUsage: 'ai:usage',
+  aiUsageSummary: 'ai:usageSummary',
+  /** Main → renderer: the rate brake tripped; payload is a human-readable reason. */
+  aiPaused: 'ai:paused',
   runCode: 'run:code',
   storeGetSettings: 'store:getSettings',
   storeSetSettings: 'store:setSettings',

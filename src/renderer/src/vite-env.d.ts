@@ -15,6 +15,8 @@ import type {
   Settings,
   StreamChunkEvent,
   StreamDoneEvent,
+  UsageEvent,
+  UsageSummary,
   VoiceSidecarState
 } from '@shared/types'
 
@@ -31,6 +33,9 @@ export interface PrepApi {
     chip: (req: ChipRequest) => Promise<ChipResponse>
     inlineComplete: (req: InlineCompleteRequest) => Promise<InlineCompleteResponse>
     providerStatus: () => Promise<ProviderStatus[]>
+    usageSummary: () => Promise<UsageSummary>
+    onUsage: (cb: (e: { event: UsageEvent; summary: UsageSummary }) => void) => Unsubscribe
+    onPaused: (cb: (reason: string) => void) => Unsubscribe
   }
   run: {
     code: (req: RunRequest) => Promise<RunResult>

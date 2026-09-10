@@ -4,6 +4,7 @@ import { Input } from '@renderer/components/ui/Input'
 import { useAppStore, DEFAULT_VOICE } from '@renderer/state/store'
 import { listWebSpeechVoices } from '@renderer/lib/voiceClient'
 import type { AiProviderId, TtsEngine } from '@shared/types'
+import { ANTHROPIC_MODELS, COST_LIMITS } from '@shared/types'
 
 const PROVIDER_LABEL: Record<AiProviderId, string> = {
   anthropic: 'Anthropic Claude',
@@ -34,6 +35,7 @@ export function SettingsView() {
   const providerStatuses = useAppStore((s) => s.providerStatuses)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const voice = useAppStore((s) => s.voice)
+  const usage = useAppStore((s) => s.usage)
   const [logPath, setLogPath] = useState<string | null>(null)
   const [webVoices, setWebVoices] = useState<string[]>([])
 
@@ -52,6 +54,37 @@ export function SettingsView() {
       <div className="max-w-2xl">
         <h1 className="text-[22px] font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-[13px] text-zinc-500">AI provider, voice, editor, and shortcuts.</p>
+
+        <h2 className="mb-3 mt-8 text-[13px] font-medium text-zinc-300">Spend controls</h2>
+        <div className="divide-y divide-white/[0.06] rounded-xl border border-white/[0.06]">
+          <Row label="AI calls" hint="Master switch. Off = chat, chips and ghost text never contact a provider.">
+            <Button size="sm" variant={settings.aiEnabled ? 'default' : 'outline'} onClick={() => updateSettings({ aiEnabled: !settings.aiEnabled })}>
+              {settings.aiEnabled ? 'On' : 'Off'}
+            </Button>
+          </Row>
+          <Row label="Chat model" hint="Haiku is ~3× cheaper than Sonnet and plenty for coaching. Voice turns happen often — keep them cheap.">
+            <select value={settings.chatModel} onChange={(e) => updateSettings({ chatModel: e.target.value })} className={selectClass}>
+              <option value={ANTHROPIC_MODELS.haiku}>Claude Haiku 4.5 (cheap)</option>
+              <option value={ANTHROPIC_MODELS.sonnet}>Claude Sonnet 5</option>
+            </select>
+          </Row>
+          <Row
+            label="Daily budget (USD)"
+            hint={`Estimated from list prices. Today ≈ $${(usage?.todayCostUsd ?? 0).toFixed(3)} over ${usage?.todayCalls ?? 0} calls; this session ${usage?.calls ?? 0} calls. Every call is in usage.jsonl next to main.log.`}
+          >
+            <Input
+              type="number"
+              min={0}
+              step={0.5}
+              value={settings.dailyBudgetUsd}
+              onChange={(e) => updateSettings({ dailyBudgetUsd: Math.max(0, Number(e.target.value) || 0) })}
+              className="h-8 w-28"
+            />
+          </Row>
+          <Row label="Built-in brakes" hint={`At most ${COST_LIMITS.maxTurnsPerMinute} chat turns per minute; only the last ${COST_LIMITS.historyMessages} messages and ${COST_LIMITS.maxCodeChars.toLocaleString()} characters of code are sent; transcripts that echo the assistant's own voice are dropped. When a brake trips, the mic turns off and a red notice appears in the copilot header.`}>
+            <span className="text-[11.5px] text-zinc-500">always on</span>
+          </Row>
+        </div>
 
         <h2 className="mb-3 mt-8 text-[13px] font-medium text-zinc-300">AI provider</h2>
         <div className="overflow-hidden rounded-xl border border-white/[0.06]">

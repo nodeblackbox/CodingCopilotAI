@@ -15,6 +15,8 @@ import type {
   Settings,
   StreamChunkEvent,
   StreamDoneEvent,
+  UsageEvent,
+  UsageSummary,
   VoiceSidecarState
 } from '@shared/types'
 
@@ -40,7 +42,10 @@ const api = {
     chip: (req: ChipRequest): Promise<ChipResponse> => ipcRenderer.invoke(IPC.aiChip, req),
     inlineComplete: (req: InlineCompleteRequest): Promise<InlineCompleteResponse> =>
       ipcRenderer.invoke(IPC.aiInlineComplete, req),
-    providerStatus: (): Promise<ProviderStatus[]> => ipcRenderer.invoke(IPC.aiProviderStatus)
+    providerStatus: (): Promise<ProviderStatus[]> => ipcRenderer.invoke(IPC.aiProviderStatus),
+    usageSummary: (): Promise<UsageSummary> => ipcRenderer.invoke(IPC.aiUsageSummary),
+    onUsage: (cb: (e: { event: UsageEvent; summary: UsageSummary }) => void): Unsubscribe => subscribe(IPC.aiUsage, cb),
+    onPaused: (cb: (reason: string) => void): Unsubscribe => subscribe(IPC.aiPaused, cb)
   },
   run: {
     code: (req: RunRequest): Promise<RunResult> => ipcRenderer.invoke(IPC.runCode, req)

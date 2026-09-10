@@ -9,9 +9,10 @@ import type {
   Settings,
   StreamChunkEvent,
   StreamDoneEvent,
+  UsageSummary,
   VoiceSidecarState
 } from '@shared/types'
-import { EDITOR_CMD } from '@shared/types'
+import { ANTHROPIC_MODELS, EDITOR_CMD } from '@shared/types'
 import { QUESTIONS, questionById, starterFor } from '@renderer/data/questions'
 import { CHIP_DEFS } from '@renderer/data/chips'
 import { uid } from '@renderer/lib/utils'
@@ -52,6 +53,9 @@ export interface VoiceUiState {
 
 const DEFAULT_SETTINGS: Settings = {
   provider: 'anthropic',
+  aiEnabled: true,
+  chatModel: ANTHROPIC_MODELS.haiku,
+  dailyBudgetUsd: 2,
   language: 'python',
   guidedVoice: false,
   inlineCompletions: true,
@@ -122,6 +126,12 @@ interface AppState {
   toggleMic: () => Promise<void>
   stopSpeaking: () => void
 
+  // spend meter + brakes
+  usage: UsageSummary | null
+  /** Set when main refused calls (rate brake / budget / AI off); cleared on the next successful send. */
+  pausedReason: string | null
+  clearPaused: () => void
+
   // terminal / run
   terminalOpen: boolean
   running: boolean
@@ -159,6 +169,23 @@ interface LiveStream {
   notes: string
 }
 let liveStream: LiveStream | null = null
+
+/** What the agent said recently (visible text), so a transcript that is really our own voice can be dropped. */
+let recentAgentSpeech: { text: string; at: number }[] = []
+const ECHO_WINDOW_MS = 20_000
+
+const words = (s: string): string[] => s.toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').split(/\s+/).filter(Boolean)
+
+/** True when most of the transcript's words appear in something the agent said in the last 20 s. */
+function looksLikeEcho(transcript: string): boolean {
+  const now = Date.now()
+  recentAgentSpeech = recentAgentSpeech.filter((r) => now - r.at < ECHO_WINDOW_MS)
+  const t = words(transcript)
+  if (t.length < 3) return false
+  const said = new Set(recentAgentSpeech.flatMap((r) => words(r.text)))
+  const hits = t.filter((w) => said.has(w)).length
+  return hits / t.length >= 0.7
+}
 
 interface EditorCommand {
   kind: 'insert' | 'replace'
@@ -270,7 +297,10 @@ export const useAppStore = create<AppState>((set, get) => {
     if (visible.length > stream.visibleLen) {
       const fresh = visible.slice(stream.visibleLen)
       stream.visibleLen = visible.length
-      if (stream.speak) speakSentences(stream.chunker.feed(fresh))
+      if (stream.speak) {
+        recentAgentSpeech.push({ text: fresh, at: Date.now() })
+        speakSentences(stream.chunker.feed(fresh))
+      }
     }
     setLastAssistant(visible.replace(/\s+$/, '') + stream.notes)
   }
@@ -285,8 +315,14 @@ export const useAppStore = create<AppState>((set, get) => {
     if (!liveStream || e.requestId !== liveStream.requestId) return
     const stream = liveStream
     liveStream = null
-    if (e.error) setLastAssistant(splitEditorCommands(stream.raw).visible + `\n\nCopilot error: ${e.error}`)
-    else if (!e.cancelled) {
+    if (e.error) {
+      setLastAssistant(splitEditorCommands(stream.raw).visible + `\n\nCopilot error: ${e.error}`)
+      // A refusal from the brakes/budget/off-switch: stop listening so a voice loop can't keep retrying.
+      if (/paused|budget|switched off/i.test(e.error)) {
+        set({ pausedReason: e.error })
+        if (get().voice.micOn) void get().toggleMic()
+      }
+    } else if (!e.cancelled) {
       ingest(stream)
       if (stream.speak) speakSentences(stream.chunker.flush())
     }
@@ -313,6 +349,11 @@ export const useAppStore = create<AppState>((set, get) => {
       onBargeIn: () => get().stopSpeaking(),
       onFinal: (text) => {
         setVoice({ partial: '' })
+        if (looksLikeEcho(text)) {
+          // The mic heard the agent's own voice (speakers, no headphones). Never turn that into a paid turn.
+          setVoice({ lastError: `Ignored echo of the assistant: “${text.slice(0, 60)}…”` })
+          return
+        }
         set({ rightMode: 'ask' })
         void get().sendMessage(text, { speak: true })
       },
@@ -427,6 +468,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const trimmed = text.trim()
       if (!trimmed) return
       get().cancelReply() // a new turn always supersedes the previous reply (typed or spoken)
+      set({ pausedReason: null })
       const { question, language, code, settings, messages, editorState } = get()
       const history: ChatMessage[] = [...messages, { role: 'user', text: trimmed }]
       const requestId = uid()
@@ -499,6 +541,10 @@ export const useAppStore = create<AppState>((set, get) => {
     stopSpeaking: () => {
       get().cancelReply()
     },
+
+    usage: null,
+    pausedReason: null,
+    clearPaused: () => set({ pausedReason: null }),
 
     terminalOpen: false,
     running: false,
@@ -591,6 +637,13 @@ export const useAppStore = create<AppState>((set, get) => {
         initialized = true
         window.api.ai.onStreamChunk(onChunk)
         window.api.ai.onStreamDone(onDone)
+        window.api.ai.onUsage(({ summary }) => set({ usage: summary }))
+        window.api.ai.onPaused((reason) => {
+          set({ pausedReason: reason })
+          get().cancelReply()
+          if (get().voice.micOn) void get().toggleMic()
+        })
+        void window.api.ai.usageSummary().then((usage) => set({ usage }))
         window.api.voice.onStateChanged((sidecar) => {
           setVoice({ sidecar, ...(sidecar.status !== 'ready' ? { micOn: false, agentSpeaking: false } : {}) })
           if (sidecar.status !== 'ready') {

@@ -29,8 +29,13 @@ export function CopilotPanel({ width }: { width: number }) {
   const settings = useAppStore((s) => s.settings)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const cursor = useAppStore((s) => s.editorState.cursor)
+  const usage = useAppStore((s) => s.usage)
+  const pausedReason = useAppStore((s) => s.pausedReason)
+  const clearPaused = useAppStore((s) => s.clearPaused)
 
   const nextEngine = ENGINE_ORDER[(ENGINE_ORDER.indexOf(settings.ttsEngine as (typeof ENGINE_ORDER)[number]) + 1) % ENGINE_ORDER.length]
+  const modelShort = settings.chatModel.includes('haiku') ? 'Haiku' : settings.chatModel.includes('sonnet') ? 'Sonnet' : settings.chatModel
+  const overBudget = usage && settings.dailyBudgetUsd > 0 && usage.todayCostUsd >= settings.dailyBudgetUsd
 
   return (
     <div style={{ width }} className="flex flex-none flex-col border-l border-white/[0.06] bg-[#0d0f15]/40">
@@ -42,6 +47,37 @@ export function CopilotPanel({ width }: { width: number }) {
             Ln {cursor.line}, Col {cursor.column}
           </span>
         </div>
+        <div className="mb-2 flex items-center gap-2">
+          <button
+            data-testid="ai-toggle"
+            onClick={() => updateSettings({ aiEnabled: !settings.aiEnabled })}
+            title={settings.aiEnabled ? 'Every model call is allowed. Click to block all of them.' : 'All model calls are blocked. Click to allow.'}
+            className={`rounded-md border px-2 py-0.5 text-[11px] font-medium ${
+              settings.aiEnabled ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300' : 'border-rose-400/50 bg-rose-500/15 text-rose-200'
+            }`}
+          >
+            {settings.aiEnabled ? 'AI on' : 'AI OFF'}
+          </button>
+          <span
+            data-testid="spend-meter"
+            className={`font-mono text-[10.5px] ${overBudget ? 'text-rose-300' : 'text-zinc-500'}`}
+            title={
+              usage
+                ? `Today: ${usage.todayCalls} calls. This session: ${usage.calls} calls, ${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out tokens. Budget $${settings.dailyBudgetUsd.toFixed(2)}/day. Estimated from list prices; usage.jsonl has every call.`
+                : 'No calls yet this session'
+            }
+          >
+            {usage ? `today ≈ $${usage.todayCostUsd.toFixed(3)} / $${settings.dailyBudgetUsd.toFixed(2)} · ${modelShort}` : `${modelShort} · $0.000`}
+          </span>
+        </div>
+        {pausedReason && (
+          <div className="mb-2 flex items-start gap-2 rounded-lg border border-rose-400/40 bg-rose-500/10 px-2.5 py-2 text-[11.5px] text-rose-100">
+            <span className="flex-1">{pausedReason}</span>
+            <button onClick={clearPaused} className="text-rose-300 hover:text-white" title="Dismiss">
+              ✕
+            </button>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-1.5">
           <div className="inline-flex rounded-lg border border-white/[0.08] p-0.5">
             {(['ask', 'agent'] as const).map((id) => (

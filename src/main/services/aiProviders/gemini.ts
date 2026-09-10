@@ -37,23 +37,34 @@ async function post(req: CompletionRequest, stream: boolean): Promise<Response> 
   return res
 }
 
-type GeminiChunk = { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+type GeminiChunk = {
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
+}
 const textOf = (c: GeminiChunk): string => (c.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? '').join('')
+const usageOf = (c: GeminiChunk) => ({
+  inputTokens: c.usageMetadata?.promptTokenCount ?? 0,
+  outputTokens: c.usageMetadata?.candidatesTokenCount ?? 0
+})
 
 export function createGeminiProvider(): AiProvider {
   return {
     id: 'gemini',
     label: 'Google Gemini',
+    modelFor: () => MODEL,
     isConfigured: () => getApiKey().length > 0,
 
     async complete(req) {
       const res = await post(req, false)
-      return textOf((await res.json()) as GeminiChunk)
+      const data = (await res.json()) as GeminiChunk
+      req.onUsage?.(usageOf(data))
+      return textOf(data)
     },
 
     async stream(req, onDelta) {
       const res = await post(req, true)
       let full = ''
+      let last: GeminiChunk = {}
       await readSse(res, (data) => {
         let evt: GeminiChunk
         try {
@@ -61,12 +72,14 @@ export function createGeminiProvider(): AiProvider {
         } catch {
           return
         }
+        if (evt.usageMetadata) last = evt
         const delta = textOf(evt)
         if (delta) {
           full += delta
           onDelta(delta)
         }
       })
+      req.onUsage?.(usageOf(last))
       return full
     }
   }

@@ -102,6 +102,23 @@ holds the keys. The sidecar is ears and mouth only, so it stays dumb, fast, and 
   Practice starts a saved attempt. "Upload from file" / "Generate with AI" are not wired up yet.
 - **Language server** (pyright over LSP): not yet.
 
+## Spend brakes (read this if a balance ever drained unexpectedly)
+
+On 2026-09-10 a voice session burned ~9M tokens in ~20 minutes. The mechanism: the mic heard the
+assistant through the speakers → Silero called it speech → barge-in → Parakeet transcribed *the assistant*
+→ that became a new "user" turn (billed for the full prompt even when cancelled) → the assistant answered →
+repeat every 1–2 s. Nothing in the app limited it. Now:
+
+- **Haiku 4.5 is the default chat model** (Settings → Spend controls), Sonnet is opt-in.
+- **Rate brake:** > 8 chat turns in 60 s → calls refused, mic switched off, red notice in the copilot header.
+- **Daily budget** (default $2, from `usage.jsonl` list-price estimates) → calls refused when reached.
+- **Echo guard:** a transcript whose words are ≥70% what the assistant said in the last 20 s is dropped.
+- **Prompt caps:** last 10 messages, 12k characters of code.
+- **Spend meter** in the copilot header (real token counts from the API), every call appended to
+  `<userData>/usage.jsonl`, and a master **AI on/off** switch.
+
+Headphones remain the best echo fix; the guard is the safety net.
+
 ## What costs API credits
 
 | Action | Provider | Rough size |

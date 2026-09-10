@@ -6,6 +6,9 @@ import { logger } from '@main/logger'
 
 const DEFAULT_SETTINGS: Settings = {
   provider: 'anthropic',
+  aiEnabled: true,
+  chatModel: 'claude-haiku-4-5-20251001',
+  dailyBudgetUsd: 2,
   language: 'python',
   guidedVoice: false,
   inlineCompletions: true,
