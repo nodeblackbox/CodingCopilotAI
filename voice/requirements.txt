@@ -1,0 +1,10 @@
+# Python voice sidecar (voice/server.py). Install into whatever interpreter VOICE_PYTHON points at:
+#   py -3 -m pip install -r voice/requirements.txt
+websockets>=12
+numpy
+torch                # Silero VAD (CPU is fine for VAD)
+silero-vad>=5
+edge-tts>=6          # Microsoft Edge neural voices (en-US-AvaNeural), free, no key
+onnx-asr             # Parakeet TDT 0.6B v3 via ONNX Runtime (pip install onnx-asr[gpu] for CUDA)
+# optional, only if you want the local Kokoro engine instead of Edge:
+# kokoro

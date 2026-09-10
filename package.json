@@ -1,0 +1,50 @@
+{
+  "name": "prep-copilot",
+  "version": "0.1.0",
+  "description": "Interview-prep IDE: Electron + TypeScript + React + Monaco, with an AI copilot panel.",
+  "main": "./out/main/index.js",
+  "author": "evil.pocket.money@gmail.com",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "debug": "electron-vite dev --inspect=5858 -- --remote-debugging-port=9222",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "lint": "eslint . --ext .ts,.tsx",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "clsx": "^2.1.1",
+    "diff": "^5.2.0",
+    "dotenv": "^16.4.5",
+    "lucide-react": "^0.446.0",
+    "monaco-editor": "^0.50.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.2",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.2.3",
+    "@types/node": "^22.5.5",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.5.0",
+    "@typescript-eslint/parser": "^8.5.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "electron": "^31.4.0",
+    "electron-vite": "^2.3.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.35.2",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "playwright-core": "^1.63.0",
+    "postcss": "^8.4.45",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.5"
+  }
+}
