@@ -67,6 +67,8 @@ export interface AskRequest {
   cursor?: CursorInfo
   /** Currently selected text, if any. */
   selection?: string
+  /** Unified-style +/- lines describing what the user changed since the assistant's previous reply. */
+  recentChanges?: string
 }
 
 /**

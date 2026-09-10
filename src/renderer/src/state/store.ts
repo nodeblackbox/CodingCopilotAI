@@ -19,6 +19,10 @@ import { uid } from '@renderer/lib/utils'
 import { SentenceChunker } from '@renderer/lib/sentenceChunker'
 import { VoiceClient } from '@renderer/lib/voiceClient'
 import { insertAtCursor, revealLine } from '@renderer/lib/editorBridge'
+import { describeChanges } from '@renderer/lib/diffLines'
+
+/** The editor text as of the last turn we sent, so the next turn can say what changed. */
+let codeAtLastTurn: string | null = null
 
 export type View = 'workspace' | 'playgrounds' | 'library' | 'settings'
 export type RightMode = 'ask' | 'agent'
@@ -410,6 +414,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const q = questionById(id)
       if (!q) return
       get().cancelReply()
+      codeAtLastTurn = null
       set({
         question: q,
         code: starterFor(q, get().language),
@@ -474,6 +479,8 @@ export const useAppStore = create<AppState>((set, get) => {
       const requestId = uid()
       liveStream = { requestId, speak: Boolean(opts.speak), chunker: new SentenceChunker(), raw: '', visibleLen: 0, executed: 0, notes: '' }
       set({ messages: [...history, { role: 'assistant', text: '' }], chatSending: true })
+      const recentChanges = codeAtLastTurn === null ? '' : describeChanges(codeAtLastTurn, code)
+      codeAtLastTurn = code
       await window.api.ai.askStream({
         requestId,
         messages: history,
@@ -484,7 +491,8 @@ export const useAppStore = create<AppState>((set, get) => {
         language,
         code,
         cursor: editorState.cursor,
-        selection: editorState.selection
+        selection: editorState.selection,
+        recentChanges
       })
     },
     cancelReply: () => {
@@ -587,6 +595,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const { language, question: current } = get()
       const question = (questionId && questionById(questionId)) || pickNextQuestion(current.id)
       get().cancelReply()
+      codeAtLastTurn = null
       const name = fileName(language)
       const playground: Playground = {
         id: uid(),
@@ -616,6 +625,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const playground = await window.api.store.getPlayground(id)
       if (!playground) return
       get().cancelReply()
+      codeAtLastTurn = null
       const question = questionById(playground.questionId) ?? QUESTIONS[0]
       const file = playground.files.find((f) => f.name === playground.activeFile) ?? playground.files[0]
       set({

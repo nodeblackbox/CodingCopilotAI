@@ -4,6 +4,7 @@ import type {
   AskRequest,
   AskResponse,
   AskStreamRequest,
+  ChatMessage,
   ChipRequest,
   ChipResponse,
   InlineCompleteRequest,
@@ -17,6 +18,7 @@ import type { AiProvider, TokenUsage } from '@main/services/aiProviders/types'
 import { buildAskSystemPrompt, buildChipPrompt, buildInlinePrompt } from '@main/services/prompts'
 import { getSettings } from '@main/services/store'
 import { estimateTokens, getUsageSummary, recordUsage } from '@main/services/usageLedger'
+import { logTurn } from '@main/services/turnLog'
 import { logger } from '@main/logger'
 
 /** In-flight streams by requestId, so the renderer can cancel (barge-in, new message). */
@@ -58,11 +60,23 @@ function checkTurnRate(sender: Electron.WebContents): void {
   recentTurns.push(now)
 }
 
-/** Keep the prompt bounded: last N messages, editor text head+tail. */
+/**
+ * Keep the prompt bounded and well-formed: last N messages, editor text head+tail, and strictly
+ * alternating roles — a cancelled/empty assistant turn otherwise leaves two user messages in a row,
+ * which Anthropic rejects ("roles must alternate") and the user sees as "it broke".
+ */
 function trimForPrompt<T extends AskRequest>(req: T): T {
-  const messages = req.messages.slice(-COST_LIMITS.historyMessages)
-  // Anthropic requires the first message to be from the user.
+  const merged: ChatMessage[] = []
+  for (const m of req.messages) {
+    if (m.role === 'system' || !m.text.trim()) continue
+    const last = merged[merged.length - 1]
+    if (last && last.role === m.role) last.text = `${last.text}\n\n${m.text}`
+    else merged.push({ role: m.role, text: m.text })
+  }
+  const messages = merged.slice(-COST_LIMITS.historyMessages)
+  // Anthropic requires the first message to be from the user, and the last one must be the new user turn.
   while (messages.length && messages[0].role !== 'user') messages.shift()
+  while (messages.length > 1 && messages[messages.length - 1].role !== 'user') messages.pop()
   let code = req.code
   if (code.length > COST_LIMITS.maxCodeChars) {
     const half = Math.floor(COST_LIMITS.maxCodeChars / 2)
@@ -179,6 +193,8 @@ export function registerAiIpc(): void {
     const rec = usageRecorder(provider, model, 'chat', () => system + req.messages.map((m) => m.text).join(''))
     const ac = new AbortController()
     activeStreams.set(req.requestId, ac)
+    const meta = { provider: provider.id, model, startedAt: Date.now() }
+    let partial = ''
 
     void provider
       .stream(
@@ -190,18 +206,24 @@ export function registerAiIpc(): void {
           signal: ac.signal,
           onUsage: rec.onUsage
         },
-        (delta) => send(IPC.aiStreamChunk, { requestId: req.requestId, delta })
+        (delta) => {
+          partial += delta
+          send(IPC.aiStreamChunk, { requestId: req.requestId, delta })
+        }
       )
       .then((text) => {
         rec.finish(text)
+        logTurn(req, meta, { reply: text })
         send(IPC.aiStreamDone, { requestId: req.requestId, text })
       })
       .catch((err) => {
         if (isAbort(err)) {
+          logTurn(req, meta, { reply: partial, cancelled: true })
           send(IPC.aiStreamDone, { requestId: req.requestId, text: '', cancelled: true })
           return
         }
         logger.error('ai:askStream', 'Stream failed', err)
+        logTurn(req, meta, { reply: partial, error: (err as Error).message })
         send(IPC.aiStreamDone, { requestId: req.requestId, text: '', error: (err as Error).message })
       })
       .finally(() => activeStreams.delete(req.requestId))

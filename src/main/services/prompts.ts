@@ -54,9 +54,24 @@ function renderEditor(req: AskRequest): string[] {
     const mark = cur && cur.line === n ? '▶' : ' '
     return `${String(n).padStart(width)}${mark}| ${l}`
   })
-  const out = ['Editor (line numbers are not part of the file; ▶ marks the cursor line):', '```', ...body, '```']
+  const out = [
+    'Editor — this is the LIVE file exactly as it is right now, including anything the candidate typed since your',
+    'last reply (line numbers are not part of the file; ▶ marks the cursor line):',
+    '```',
+    ...body,
+    '```'
+  ]
   if (cur) out.push(`Cursor: line ${cur.line}, column ${cur.column}.`)
   if (req.selection?.trim()) out.push('Selected text:', '```', req.selection, '```')
+  if (req.recentChanges?.trim()) {
+    out.push(
+      'Changes the candidate made since your previous reply (+ added, - removed). Acknowledge them when relevant;',
+      'never claim you cannot see the file:',
+      '```diff',
+      req.recentChanges,
+      '```'
+    )
+  }
   return out
 }
 

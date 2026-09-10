@@ -83,6 +83,12 @@ holds the keys. The sidecar is ears and mouth only, so it stays dumb, fast, and 
   `<<<INSERT>>> … <<<END>>>` (typed at your caret, undoable with Ctrl+Z) or `<<<REPLACE>>> … <<<END>>>`
   (goes through the Accept/Reject diff). The renderer strips the block from what's shown and spoken, so Ava never
   reads code aloud (`splitEditorCommands` in `state/store.ts`, `lib/editorBridge.ts`).
+- **It sees what you changed, not just the new snapshot:** each turn also carries a `+/-` diff of the editor
+  since the assistant's previous reply (`describeChanges` in `lib/diffLines.ts`). There is nothing to save —
+  the live buffer is read at the moment you send (or finish speaking).
+- **Turn log:** every chat/voice turn is written to `<userData>/turns.jsonl` — the exact code snapshot,
+  cursor, diff, trimmed history, reply, error, and timing — so "it didn't see my change" can be checked
+  against what the model was actually shown.
 - **Ghost text is conversation-aware:** inline completions include the last six chat/voice turns, so the
   suggestion follows what you just agreed on with the coach.
 - **Modes are one click away:** Guided / Ghost text / voice engine pills in the copilot header, a ghost-text
