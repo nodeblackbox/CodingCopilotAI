@@ -102,6 +102,19 @@ holds the keys. The sidecar is ears and mouth only, so it stays dumb, fast, and 
   Practice starts a saved attempt. "Upload from file" / "Generate with AI" are not wired up yet.
 - **Language server** (pyright over LSP): not yet.
 
+## What costs API credits
+
+| Action | Provider | Rough size |
+| --- | --- | --- |
+| A chat or voice turn | active provider (Anthropic by default) | 1.5–3k tokens in (the prompt includes the whole file), a few hundred out |
+| An Agent chip | active provider | same; diff chips up to 2k out |
+| Ghost text (each pause ≥350 ms while typing) | **Groq** when a Groq key exists, else the active provider | ~800 in / ≤160 out |
+| `npm run smoke` | Anthropic ×3 + Groq ×1 | one run ≈ 10k tokens — don't loop it |
+| Voice STT/TTS | none (local Parakeet; Edge TTS is free) | — |
+
+If a turn fails with `credit balance is too low`, that's the Anthropic prepaid balance, not a rate limit;
+the app logs the exact provider error in `main.log` and shows it in the chat bubble.
+
 ## Voice environment notes
 
 - **Use the voiceAgent venv.** `.env` sets `VOICE_PYTHON=D:\Downloads\voiceAgent\.venv\Scripts\python.exe`:
