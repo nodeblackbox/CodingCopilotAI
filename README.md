@@ -153,6 +153,13 @@ the app logs the exact provider error in `main.log` and shows it in the chat bub
   point per miss; at 3 credits (~100 ms) Ava's volume **ducks** to 25 % (a "mhm" passes and it recovers), at 10
   (~320 ms) she is **cut** and your words become the next turn. Tune with `--bargein-*`/`--duck-chunks` in
   `voice/server.py`. Volume slider lives under the mic button. Headphones still help.
+- **You always have precedence.** VAD runs on the mic; ducking/cutting acts on the speaker. If you start
+  talking while the reply is still being generated (no audio yet), the reply is cancelled and your next
+  sentence is merged with the previous one into a single turn (the half-turn is removed from history). If
+  you talk while it's audibly speaking, that's the barge-in above. Smart Turn starts scoring after 350 ms
+  of silence; 1.5 s is the hard end-of-turn.
+- **Read aloud:** the speaker button next to the question title reads the problem through the voice
+  pipeline (no model call). Agent chip results also land in the chat thread and are read out when the mic is on.
 - **Ghost text in comments:** when the caret is in a `#`, `//`, `/* */` or docstring line, the completion
   is asked for prose that finishes the comment (accurate to the code around it), not code.
 - **Lifecycle:** the sidecar exits on its own when Electron dies (it watches its stdin pipe), so a crashed IDE

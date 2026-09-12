@@ -1,3 +1,4 @@
+import { Volume2, Square, Loader2 } from 'lucide-react'
 import { Tag } from '@renderer/components/ui/Tag'
 import { useAppStore } from '@renderer/state/store'
 import { CHIP_DEFS } from '@renderer/data/chips'
@@ -14,6 +15,10 @@ export function QuestionPanel({ width }: { width: number }) {
   const question = useAppStore((s) => s.question)
   const setRightMode = useAppStore((s) => s.setRightMode)
   const selectChip = useAppStore((s) => s.selectChip)
+  const readQuestionAloud = useAppStore((s) => s.readQuestionAloud)
+  const stopSpeaking = useAppStore((s) => s.stopSpeaking)
+  const agentSpeaking = useAppStore((s) => s.voice.agentSpeaking)
+  const connecting = useAppStore((s) => s.voice.connecting)
 
   return (
     <div
@@ -28,9 +33,22 @@ export function QuestionPanel({ width }: { width: number }) {
           </Tag>
         ))}
       </div>
-      <h2 className="mb-3 text-[19px] font-semibold tracking-tight">
-        {question.index}. {question.title}
-      </h2>
+      <div className="mb-3 flex items-start gap-2">
+        <h2 className="flex-1 text-[19px] font-semibold tracking-tight">
+          {question.index}. {question.title}
+        </h2>
+        <button
+          data-testid="read-aloud"
+          onClick={() => (agentSpeaking ? stopSpeaking() : void readQuestionAloud())}
+          disabled={connecting}
+          title={agentSpeaking ? 'Stop reading' : 'Read the question aloud (no model call)'}
+          className={`mt-0.5 flex h-7 w-7 flex-none items-center justify-center rounded-lg border ${
+            agentSpeaking ? 'border-rose-400/40 bg-rose-400/10 text-rose-200' : 'border-white/[0.08] text-zinc-400 hover:bg-white/5 hover:text-teal-300'
+          }`}
+        >
+          {connecting ? <Loader2 size={13} className="animate-spin" /> : agentSpeaking ? <Square size={11} /> : <Volume2 size={13} />}
+        </button>
+      </div>
       <p className="text-[13.5px] leading-relaxed text-zinc-400">{question.prompt}</p>
 
       {question.examples.map((ex) => (

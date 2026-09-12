@@ -24,6 +24,13 @@ import { describeChanges } from '@renderer/lib/diffLines'
 /** The editor text as of the last turn we sent, so the next turn can say what changed. */
 let codeAtLastTurn: string | null = null
 
+/**
+ * User precedence: when the user keeps talking after Smart Turn already closed their turn (and before the
+ * assistant has said anything), the half-turn is remembered here so the next transcript is glued onto it.
+ */
+let pendingContinuation: { userText: string; at: number } | null = null
+const CONTINUATION_WINDOW_MS = 10_000
+
 export type View = 'workspace' | 'playgrounds' | 'library' | 'settings'
 export type RightMode = 'ask' | 'agent'
 export type DiffState = 'pending' | 'accepted' | 'rejected'
@@ -132,6 +139,9 @@ interface AppState {
   voice: VoiceUiState
   toggleMic: () => Promise<void>
   stopSpeaking: () => void
+  /** Speak arbitrary text through the voice pipeline (starts the sidecar if needed; no model call). */
+  speakText: (text: string) => Promise<void>
+  readQuestionAloud: () => Promise<void>
 
   // spend meter + brakes
   usage: UsageSummary | null
@@ -352,7 +362,25 @@ export const useAppStore = create<AppState>((set, get) => {
       onReady: ({ stt, detail, turn }) => setVoice({ stt, sttDetail: detail, turn }),
       onLevel: (level) => setVoice({ level }),
       onPartial: (text) => setVoice({ partial: text }),
-      onVad: (speaking) => setVoice({ userSpeaking: speaking, ...(speaking ? {} : { partial: '' }) }),
+      onVad: (speaking) => {
+        setVoice({ userSpeaking: speaking, ...(speaking ? {} : { partial: '' }) })
+        if (!speaking) return
+        // The user always has precedence. Talking while the reply is still being generated (no audio yet)
+        // means their turn wasn't over: drop the reply, remember the half-turn, and merge on the next final.
+        const { chatSending, voice: v, messages } = get()
+        if (chatSending && !v.agentSpeaking) {
+          const lastUser = [...messages].reverse().find((m) => m.role === 'user')
+          if (lastUser) pendingContinuation = { userText: lastUser.text, at: Date.now() }
+          get().cancelReply()
+          set((s) => {
+            const m = s.messages.slice()
+            // remove the dangling half-turn (and any partial reply) so history stays clean
+            if (m[m.length - 1]?.role === 'assistant') m.pop()
+            if (m[m.length - 1]?.role === 'user') m.pop()
+            return { messages: m }
+          })
+        }
+      },
       onDuck: (on) => setVoice({ ducked: on }),
       onBargeIn: () => {
         setVoice({ ducked: false })
@@ -365,8 +393,12 @@ export const useAppStore = create<AppState>((set, get) => {
           setVoice({ lastError: `Ignored echo of the assistant: “${text.slice(0, 60)}…”` })
           return
         }
-        set({ rightMode: 'ask' })
-        void get().sendMessage(text, { speak: true })
+        let turn = text
+        if (pendingContinuation && Date.now() - pendingContinuation.at < CONTINUATION_WINDOW_MS) {
+          turn = `${pendingContinuation.userText} ${text}`
+        }
+        pendingContinuation = null
+        void get().sendMessage(turn, { speak: true })
       },
       onPlaybackChange: (playing) => setVoice({ agentSpeaking: playing }),
       onError: (message) => setVoice({ lastError: message }),
@@ -458,13 +490,19 @@ export const useAppStore = create<AppState>((set, get) => {
         code
       })
 
-      set({
+      set((s) => ({
         chipLoading: false,
         chipResult: { chipId, title: def.label, summary: res.summary },
         proposedCode: res.proposedCode ?? '',
         // A diff chip that came back without code (provider error) has nothing to accept.
-        ...(def.diff && !res.proposedCode ? { diffVisible: false } : {})
-      })
+        ...(def.diff && !res.proposedCode ? { diffVisible: false } : {}),
+        // Also land it in the thread: it stays visible in Ask mode and becomes context for later turns.
+        messages: [...s.messages, { role: 'assistant', text: `**${def.label}**\n\n${res.summary}` }]
+      }))
+      if (get().voice.micOn && !res.summary.startsWith('Copilot error')) {
+        recentAgentSpeech.push({ text: res.summary, at: Date.now() })
+        speakSentences(new SentenceChunker().feed(res.summary + ' '))
+      }
     },
     acceptDiff: () => {
       if (!get().proposedCode) return
@@ -551,13 +589,38 @@ export const useAppStore = create<AppState>((set, get) => {
         const client = await ensureVoiceClient(sidecar.port)
         await client.startMic()
         setVoice({ micOn: true, connecting: false })
-        set({ rightMode: 'ask' })
       } catch (err) {
         setVoice({ connecting: false, micOn: false, lastError: (err as Error).message })
       }
     },
     stopSpeaking: () => {
       get().cancelReply()
+    },
+    speakText: async (text) => {
+      const trimmed = text.trim()
+      if (!trimmed) return
+      setVoice({ lastError: null })
+      try {
+        let sidecar = get().voice.sidecar
+        if (sidecar.status !== 'ready') {
+          setVoice({ connecting: true })
+          sidecar = await window.api.voice.start()
+          setVoice({ sidecar, connecting: false })
+        }
+        if (sidecar.status !== 'ready' || !sidecar.port) throw new Error(sidecar.message ?? 'Voice server is not available')
+        await ensureVoiceClient(sidecar.port)
+        voice?.stopSpeaking()
+        recentAgentSpeech.push({ text: trimmed, at: Date.now() })
+        const chunker = new SentenceChunker()
+        speakSentences([...chunker.feed(trimmed + ' '), ...chunker.flush()])
+      } catch (err) {
+        setVoice({ connecting: false, lastError: (err as Error).message })
+      }
+    },
+    readQuestionAloud: async () => {
+      const q = get().question
+      const examples = q.examples.map((e) => `${e.heading}. ${e.lines.join('. ')}`).join(' ')
+      await get().speakText(`${q.title}. ${q.prompt} ${examples} Constraints: ${q.constraints.join('; ')}.`)
     },
 
     usage: null,
