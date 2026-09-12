@@ -52,6 +52,8 @@ export interface VoiceUiState {
   partial: string
   userSpeaking: boolean
   agentSpeaking: boolean
+  /** Playback is ducked because you seem to be talking over the assistant. */
+  ducked: boolean
   lastError: string | null
 }
 
@@ -65,6 +67,7 @@ const DEFAULT_SETTINGS: Settings = {
   inlineCompletions: true,
   ttsEngine: 'edge',
   voiceName: 'en-US-AvaNeural',
+  voiceVolume: 0.9,
   shortcuts: {}
 }
 
@@ -350,7 +353,11 @@ export const useAppStore = create<AppState>((set, get) => {
       onLevel: (level) => setVoice({ level }),
       onPartial: (text) => setVoice({ partial: text }),
       onVad: (speaking) => setVoice({ userSpeaking: speaking, ...(speaking ? {} : { partial: '' }) }),
-      onBargeIn: () => get().stopSpeaking(),
+      onDuck: (on) => setVoice({ ducked: on }),
+      onBargeIn: () => {
+        setVoice({ ducked: false })
+        get().stopSpeaking()
+      },
       onFinal: (text) => {
         setVoice({ partial: '' })
         if (looksLikeEcho(text)) {
@@ -369,6 +376,7 @@ export const useAppStore = create<AppState>((set, get) => {
       }
     })
     await client.connect(port)
+    client.setVolume(get().settings.voiceVolume)
     voice = client
     return client
   }
@@ -391,6 +399,7 @@ export const useAppStore = create<AppState>((set, get) => {
     updateSettings: async (patch) => {
       const next = { ...get().settings, ...patch }
       set({ settings: next })
+      if (patch.voiceVolume !== undefined) voice?.setVolume(patch.voiceVolume)
       await window.api.store.setSettings(next)
     },
 
@@ -521,6 +530,7 @@ export const useAppStore = create<AppState>((set, get) => {
       partial: '',
       userSpeaking: false,
       agentSpeaking: false,
+      ducked: false,
       lastError: null
     },
     toggleMic: async () => {

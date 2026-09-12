@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS: Settings = {
   inlineCompletions: true,
   ttsEngine: 'edge',
   voiceName: 'en-US-AvaNeural',
+  voiceVolume: 0.9,
   shortcuts: {
     'Run code': 'Ctrl+Enter',
     'Toggle terminal': 'Ctrl+`',

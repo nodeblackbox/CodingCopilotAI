@@ -278,9 +278,22 @@ function AskMode() {
               className="inline-flex items-center gap-1 rounded-lg border border-rose-400/30 bg-rose-400/10 px-2 py-1 text-[11.5px] text-rose-200 hover:bg-rose-400/20"
             >
               {voice.agentSpeaking ? <Volume2 size={11} className="animate-pulse" /> : <Square size={10} />}
-              {voice.agentSpeaking ? 'Speaking · stop' : 'Stop'}
+              {voice.agentSpeaking ? (voice.ducked ? 'Ducked · talk to cut in' : 'Speaking · stop') : 'Stop'}
             </button>
           )}
+        </div>
+        <div className="flex items-center gap-2" title="Assistant voice volume">
+          <Volume2 size={12} className="text-zinc-500" />
+          <input
+            data-testid="volume-slider"
+            type="range"
+            min={0}
+            max={100}
+            value={Math.round(settings.voiceVolume * 100)}
+            onChange={(e) => updateSettings({ voiceVolume: Number(e.target.value) / 100 })}
+            className="h-1 flex-1 cursor-pointer accent-teal-400"
+          />
+          <span className="w-8 text-right font-mono text-[10.5px] text-zinc-500">{Math.round(settings.voiceVolume * 100)}%</span>
         </div>
         {voice.lastError && <div className="text-[11px] text-rose-300">{voice.lastError}</div>}
         <Textarea

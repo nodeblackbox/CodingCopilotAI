@@ -148,8 +148,13 @@ the app logs the exact provider error in `main.log` and shows it in the chat bub
   sentence once warm (the sidecar warms it at startup; the very first call is ~2–7 s), Smart Turn ~10 ms.
 - **End of turn** is Smart Turn v3.2 (`voice/models/`, copied from voiceAgent) with the filler-word guard;
   `--max-silence 1200` is the hard fallback. A long ramble becomes several turns — that's intended.
-- **Echo/barge-in:** the mic uses Chromium's echo cancellation; while Ava talks, the sidecar needs ~250 ms of
-  sustained speech before it interrupts her. Headphones still help.
+- **Echo/barge-in:** the mic uses Chromium's echo cancellation. Interrupting is two-stage, ported from
+  `voiceAgent/agent/talk.py`: speech credit accumulates per 32 ms VAD hit (score ≥ 0.6) and only leaks one
+  point per miss; at 3 credits (~100 ms) Ava's volume **ducks** to 25 % (a "mhm" passes and it recovers), at 10
+  (~320 ms) she is **cut** and your words become the next turn. Tune with `--bargein-*`/`--duck-chunks` in
+  `voice/server.py`. Volume slider lives under the mic button. Headphones still help.
+- **Ghost text in comments:** when the caret is in a `#`, `//`, `/* */` or docstring line, the completion
+  is asked for prose that finishes the comment (accurate to the code around it), not code.
 - **Lifecycle:** the sidecar exits on its own when Electron dies (it watches its stdin pipe), so a crashed IDE
   can't leave a Python process holding the GPU. If you ever suspect one: `netstat -ano -p tcp | findstr 127.0.0.1`
   and kill the python PID listening there.

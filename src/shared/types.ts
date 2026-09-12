@@ -195,6 +195,8 @@ export interface Settings {
   ttsEngine: TtsEngine
   /** Edge TTS voice name (e.g. en-US-AvaNeural), a Kokoro voice (af_heart), or a partial speechSynthesis voice name ("Ava"). */
   voiceName: string
+  /** Playback volume for the assistant's voice, 0–1. */
+  voiceVolume: number
   shortcuts: Record<string, string>
 }
 

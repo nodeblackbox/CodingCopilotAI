@@ -18,6 +18,8 @@ export interface VoiceEvents {
   onPartial: (text: string) => void
   onFinal: (text: string) => void
   onVad: (speaking: boolean) => void
+  /** The sidecar thinks the user started talking over the agent (volume is ducked until it decides). */
+  onDuck: (on: boolean) => void
   onBargeIn: () => void
   onLevel: (rms: number) => void
   onPlaybackChange: (playing: boolean) => void
@@ -59,6 +61,10 @@ export class VoiceClient {
   private micCtx: AudioContext | null = null
   private micNode: ScriptProcessorNode | null = null
   private playCtx: AudioContext | null = null
+  private gain: GainNode | null = null
+  private volume = 0.9
+  private ducked = false
+  private static readonly DUCK_FACTOR = 0.25
   private playQueue: PendingAudio[] = []
   private decoding = false
   private nextStart = 0
@@ -116,7 +122,12 @@ export class VoiceClient {
       case 'vad':
         this.events.onVad(Boolean(msg.speaking))
         break
+      case 'duck':
+        this.setDucked(Boolean(msg.on))
+        this.events.onDuck(Boolean(msg.on))
+        break
       case 'bargein':
+        this.setDucked(false)
         this.events.onBargeIn()
         break
       case 'tts_audio': {
@@ -182,6 +193,23 @@ export class VoiceClient {
   }
 
   // ---------------------------------------------------------------- speaker
+  /** 0–1. Applies immediately to what's playing (Web Audio gain) and to future speechSynthesis utterances. */
+  setVolume(volume: number): void {
+    this.volume = Math.max(0, Math.min(1, volume))
+    this.applyGain()
+  }
+
+  private setDucked(on: boolean): void {
+    this.ducked = on
+    this.applyGain()
+  }
+
+  private applyGain(): void {
+    if (!this.gain || !this.playCtx) return
+    const target = this.volume * (this.ducked ? VoiceClient.DUCK_FACTOR : 1)
+    this.gain.gain.setTargetAtTime(target, this.playCtx.currentTime, 0.02)
+  }
+
   speak(text: string, engine: TtsEngine, voice: string): void {
     this.setPlaying(true)
     if (engine === 'webspeech') {
@@ -204,6 +232,7 @@ export class VoiceClient {
     const v = pickWebSpeechVoice(voiceName)
     if (v) u.voice = v
     u.rate = 1.05
+    u.volume = this.volume
     this.utterances.add(u)
     const done = (): void => {
       this.utterances.delete(u)
@@ -231,6 +260,7 @@ export class VoiceClient {
     }
     this.activeSources.clear()
     this.nextStart = 0
+    this.setDucked(false)
     if (this.utterances.size) {
       this.utterances.clear()
       try {
@@ -296,7 +326,7 @@ export class VoiceClient {
     const ctx = this.ensurePlayCtx()
     const src = ctx.createBufferSource()
     src.buffer = buffer
-    src.connect(ctx.destination)
+    src.connect(this.gain!)
     const start = Math.max(ctx.currentTime + 0.02, this.nextStart)
     src.start(start)
     this.nextStart = start + buffer.duration
@@ -308,7 +338,12 @@ export class VoiceClient {
   }
 
   private ensurePlayCtx(): AudioContext {
-    if (!this.playCtx) this.playCtx = new AudioContext()
+    if (!this.playCtx) {
+      this.playCtx = new AudioContext()
+      this.gain = this.playCtx.createGain()
+      this.gain.connect(this.playCtx.destination)
+      this.applyGain()
+    }
     if (this.playCtx.state === 'suspended') void this.playCtx.resume()
     return this.playCtx
   }
@@ -321,6 +356,7 @@ export class VoiceClient {
     this.ws = null
     void this.playCtx?.close()
     this.playCtx = null
+    this.gain = null
   }
 }
 

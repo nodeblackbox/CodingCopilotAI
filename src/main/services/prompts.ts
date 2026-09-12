@@ -120,14 +120,45 @@ export function buildAskSystemPrompt(req: AskRequest): string {
   return base.join('\n')
 }
 
+/**
+ * Is the caret inside a comment or docstring? Then the completion should be prose, not code.
+ * Cheap heuristics over the text before the cursor; good enough for #, //, /* … *\/ and Python triple quotes.
+ */
+export function inlineContextKind(prefix: string, language: string): 'comment' | 'code' {
+  const line = prefix.slice(prefix.lastIndexOf('\n') + 1)
+  const t = line.trimStart()
+  if (/^(#|\/\/|\*|\/\*|--|<!--)/.test(t)) return 'comment'
+  // trailing comment on a code line: `x = 1  # because`
+  if (language === 'python' && /(^|\s)#[^'"]*$/.test(line)) return 'comment'
+  if (language !== 'python' && /(^|\s)\/\/[^'"]*$/.test(line)) return 'comment'
+  // inside an unclosed block comment or docstring
+  const lastOpen = prefix.lastIndexOf('/*')
+  if (lastOpen >= 0 && prefix.indexOf('*/', lastOpen) < 0) return 'comment'
+  if (language === 'python') {
+    const triple = (prefix.match(/"""|'''/g) ?? []).length
+    if (triple % 2 === 1) return 'comment'
+  }
+  return 'code'
+}
+
 /** Ghost-text completion at the cursor. The model must return only the text to insert. */
 export function buildInlinePrompt(req: InlineCompleteRequest): { system: string; user: string } {
+  const kind = inlineContextKind(req.prefix, req.language)
   const system = [
     `You are a code completion engine (like GitHub Copilot) for ${req.language}, helping solve "${req.questionTitle}".`,
     'You will be shown the code before the cursor and the code after it. Output ONLY the text that should be',
-    'inserted at the cursor to continue the code naturally: no explanation, no markdown fences, no repetition of',
-    'the text before the cursor. Usually finish the current line and add at most a few more lines. Preserve the',
-    'indentation style. If nothing sensible should be inserted, output nothing.',
+    'inserted at the cursor: no explanation, no markdown fences, no repetition of the text before the cursor.',
+    ...(kind === 'comment'
+      ? [
+          'THE CURSOR IS INSIDE A COMMENT. Continue the comment in plain English: finish the sentence the user started',
+          '(e.g. a complexity note, an explanation of the code below, a TODO). Output prose only — no code, no new',
+          'statements. If the comment needs more than one line, start each new line with the same comment marker and',
+          'indentation. Look at the code around the cursor so the comment is accurate (real complexity, real names).'
+        ]
+      : [
+          'Usually finish the current line and add at most a few more lines of code. Preserve the indentation style.',
+          'If nothing sensible should be inserted, output nothing.'
+        ]),
     ...(req.conversation
       ? [
           '',

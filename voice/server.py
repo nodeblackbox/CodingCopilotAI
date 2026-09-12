@@ -24,7 +24,8 @@ Protocol (JSON text frames; mic audio is binary little-endian int16 @ 16 kHz mon
   server → client
     {"type":"ready","stt":"parakeet"|"loading"|"none","tts":[...],"detail","turn":"smart-turn"|"silence"}
     {"type":"vad","speaking":bool}      user speech started / stopped (after endpointing)
-    {"type":"bargein"}                  sustained speech while agent_speaking was on
+    {"type":"duck","on":bool}           user probably talking over the agent: lower/restore playback volume
+    {"type":"bargein"}                  sustained speech while agent_speaking was on: stop the agent now
     {"type":"partial","text"}           live caption of the utterance so far
     {"type":"final","text","asr_ms","turn":"done"|"timeout"}
     {"type":"tts_audio","id","format":"mp3"|"pcm16_24k","data":<base64>}
@@ -356,7 +357,9 @@ class VoiceSession:
         utt: list[np.ndarray] = []
         speaking = False
         t_on = t_last = 0.0
-        hot = 0
+        hot = 0        # leaky accumulator of net sustained-speech credit while the agent may be barged in on
+        miss_run = 0   # consecutive below-threshold chunks since the last hit, once ducked
+        ducked = False
         last_partial_len = 0
         partial_busy = threading.Event()
         last_partial_text = ""
@@ -415,21 +418,40 @@ class VoiceSession:
                     p = vad(torch.from_numpy(chunk), SR).item()
                 if not speaking:
                     preroll.append(chunk)
-                    # While the agent talks, demand a higher VAD score for longer before believing it's the user
-                    # (Chromium's echo cancellation keeps most of the agent's own voice out of the mic).
-                    thr = a.bargein_threshold if self.agent_speaking else a.threshold
-                    if p >= thr:
-                        hot += 1
-                        if not self.agent_speaking or hot >= a.bargein_chunks:
-                            if self.agent_speaking:
-                                self.emit({"type": "bargein"})
+                    if not self.agent_speaking:
+                        hot, miss_run, ducked = 0, 0, False
+                        if p >= a.threshold:
+                            speaking, t_on, t_last = True, now, now
+                            utt = list(preroll)
+                            last_partial_len = 0
+                            ep.start_utterance()
+                            self.emit({"type": "vad", "speaking": True})
+                        continue
+                    # Two-stage barge-in while the agent talks (ported from voiceAgent/agent/talk.py): speech credit
+                    # accumulates per hit and only leaks --bargein-decay per miss, so a natural 32 ms VAD dip doesn't
+                    # reset it. At --duck-chunks the playback is ducked (a backchannel "mhm" passes and the volume
+                    # comes back); at --bargein-chunks the agent is cut and the utterance is captured.
+                    if p >= a.bargein_threshold:
+                        miss_run = 0
+                        hot = min(hot + 1, a.bargein_chunks + a.duck_chunks)
+                        if hot >= a.duck_chunks and not ducked:
+                            ducked = True
+                            self.emit({"type": "duck", "on": True})
+                        if hot >= a.bargein_chunks:
+                            hot, miss_run, ducked = 0, 0, False
+                            self.emit({"type": "bargein"})
                             speaking, t_on, t_last = True, now, now
                             utt = list(preroll)
                             last_partial_len = 0
                             ep.start_utterance()
                             self.emit({"type": "vad", "speaking": True})
                     else:
-                        hot = 0
+                        hot = max(0, hot - a.bargein_decay)
+                        if ducked:
+                            miss_run += 1
+                            if miss_run >= a.bargein_release_chunks:
+                                ducked, hot, miss_run = False, 0, 0
+                                self.emit({"type": "duck", "on": False})
                     continue
 
                 utt.append(chunk)
@@ -593,8 +615,12 @@ def main() -> None:
     ap.add_argument("--device", default=os.environ.get("PARAKEET_DEVICE", "auto"), choices=["auto", "cuda", "cpu"])
     ap.add_argument("--no-stt", action="store_true", help="TTS only (no Parakeet)")
     ap.add_argument("--threshold", type=float, default=0.5)
-    ap.add_argument("--bargein-threshold", type=float, default=0.8)
-    ap.add_argument("--bargein-chunks", type=int, default=8, help="consecutive 32 ms hits to interrupt the agent")
+    ap.add_argument("--bargein-threshold", type=float, default=0.6,
+                    help="VAD score that counts as the user talking over the agent (echo cancellation attenuates you, so lower than --threshold would be too eager, higher misses you)")
+    ap.add_argument("--bargein-chunks", type=int, default=10, help="net 32 ms speech credits to cut the agent (10 ≈ 320 ms)")
+    ap.add_argument("--duck-chunks", type=int, default=3, help="net credits before the agent's volume is ducked (3 ≈ 96 ms)")
+    ap.add_argument("--bargein-decay", type=int, default=1, help="credits lost per below-threshold chunk (1 = a brief dip barely costs anything)")
+    ap.add_argument("--bargein-release-chunks", type=int, default=6, help="consecutive quiet chunks after ducking before the volume is restored (≈190 ms)")
     ap.add_argument("--smart-turn", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--min-silence", type=int, default=250, help="ms of silence before Smart Turn starts scoring")
     ap.add_argument("--max-silence", type=int, default=1200, help="ms of silence that ends the turn regardless")
