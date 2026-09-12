@@ -1,4 +1,5 @@
 import type { Question } from '@shared/types'
+import { SCRATCH_QUESTION_ID } from '@shared/types'
 
 /**
  * Seeded question bank. Every entry has a Python starter (signature + a `__main__` sanity check so Run
@@ -22,6 +23,18 @@ export const QUESTIONS: Question[] = [
       { heading: 'Example 2', lines: ['Input: nums = [3,2,4], target = 6', 'Output: [1,2]'] }
     ],
     constraints: ['2 ≤ nums.length ≤ 10⁴', '-10⁹ ≤ nums[i] ≤ 10⁹', 'Only one valid answer exists'],
+    templateCode: {
+      python: py([
+        'class Solution:',
+        '    def twoSum(self, nums: list[int], target: int) -> list[int]:',
+        '        pass',
+        '',
+        '',
+        'if __name__ == "__main__":',
+        '    print(Solution().twoSum([2, 7, 11, 15], 9))'
+      ]),
+      javascript: py(['function twoSum(nums, target) {', '  // your solution', '}', '', 'console.log(twoSum([2, 7, 11, 15], 9));'])
+    },
     starterCode: {
       python: py([
         'class Solution:',
@@ -397,11 +410,40 @@ export const LIBRARY_STATUS_LABEL: Record<Question['status'], string> = {
   not_started: 'Not started'
 }
 
+/** Free coding: no problem statement. The panel shows a notes box instead; those notes go to the model. */
+export const SCRATCH: Question = {
+  id: SCRATCH_QUESTION_ID,
+  title: 'Free coding',
+  index: 0,
+  category: 'Free coding',
+  difficulty: 'Easy',
+  topics: [],
+  prompt: '',
+  examples: [],
+  constraints: [],
+  starterCode: {
+    python: '# Free coding — no problem loaded. Tell the copilot what you\'re working on in the notes box.\n\n',
+    javascript: '// Free coding — no problem loaded.\n\n',
+    sql: '-- Free coding\n\n',
+    java: '// Free coding\n\n',
+    cpp: '// Free coding\n\n'
+  },
+  status: 'not_started'
+}
+
 export function questionById(id: string | null | undefined): Question | undefined {
+  if (id === SCRATCH_QUESTION_ID) return SCRATCH
   return QUESTIONS.find((q) => q.id === id)
 }
+
+export const isScratch = (q: Question): boolean => q.id === SCRATCH_QUESTION_ID
 
 /** Generic fallback so a language without a starter still has a signature to work from. */
 export function starterFor(question: Question, language: string): string {
   return question.starterCode[language] ?? question.starterCode.python ?? ''
+}
+
+/** Signature-only version (no attempt in the body). Same as the starter when the starter is already blank. */
+export function templateFor(question: Question, language: string): string {
+  return question.templateCode?.[language] ?? question.templateCode?.python ?? starterFor(question, language)
 }

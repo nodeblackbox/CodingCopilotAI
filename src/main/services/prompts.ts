@@ -44,25 +44,40 @@ export function buildChipPrompt(req: ChipRequest): { system: string; user: strin
   return { system, user }
 }
 
-/** The file with line numbers and a ▶ on the cursor line, so the model can talk about "line 4" and insert precisely. */
+/**
+ * The file with line numbers, ▶ on the cursor line and ▌ on highlighted lines, so the model can talk about
+ * "line 4", answer "what's this?" about exactly what's selected, and insert precisely.
+ */
 function renderEditor(req: AskRequest): string[] {
   const lines = (req.code || '').split('\n')
   const cur = req.cursor
+  const sel = req.selectionRange
   const width = String(lines.length).length
   const body = lines.map((l, i) => {
     const n = i + 1
-    const mark = cur && cur.line === n ? '▶' : ' '
+    const selected = sel && n >= sel.startLine && n <= sel.endLine
+    const mark = selected ? '▌' : cur && cur.line === n ? '▶' : ' '
     return `${String(n).padStart(width)}${mark}| ${l}`
   })
   const out = [
     'Editor — this is the LIVE file exactly as it is right now, including anything the candidate typed since your',
-    'last reply (line numbers are not part of the file; ▶ marks the cursor line):',
+    'last reply (line numbers are not part of the file; ▶ marks the cursor line, ▌ marks highlighted lines):',
     '```',
     ...body,
     '```'
   ]
   if (cur) out.push(`Cursor: line ${cur.line}, column ${cur.column}.`)
-  if (req.selection?.trim()) out.push('Selected text:', '```', req.selection, '```')
+  if (req.selection?.trim()) {
+    const span = sel ? (sel.startLine === sel.endLine ? `line ${sel.startLine}` : `lines ${sel.startLine}–${sel.endLine}`) : 'the selection'
+    out.push(
+      `THE CANDIDATE HAS HIGHLIGHTED ${span}. When they say "this", "here", "this part", "this piece of code", they mean exactly this text:`,
+      '```',
+      req.selection,
+      '```'
+    )
+  } else {
+    out.push('Nothing is highlighted right now; "this" refers to the cursor line unless they say otherwise.')
+  }
   if (req.recentChanges?.trim()) {
     out.push(
       'Changes the candidate made since your previous reply (+ added, - removed). Acknowledge them when relevant;',
@@ -76,12 +91,14 @@ function renderEditor(req: AskRequest): string[] {
 }
 
 export function buildAskSystemPrompt(req: AskRequest): string {
+  const scratch = req.mode === 'scratch'
   const base = [
-    'You are an interview-prep coding copilot living inside the candidate\'s IDE. They already know how to code and',
-    'want to speedrun interview patterns. Be direct and concise. You can SEE their editor, cursor and selection below,',
-    'and you can TYPE into it (see "Editing the file").',
-    `Current problem: "${req.questionTitle}"`,
-    req.questionPrompt,
+    scratch
+      ? "You are a coding copilot living inside the user's IDE. There is NO assigned problem: this is a free coding session, so help with whatever is in the editor and whatever they say they're working on. Be direct and concise."
+      : "You are an interview-prep coding copilot living inside the candidate's IDE. They already know how to code and want to speedrun interview patterns. Be direct and concise.",
+    'You can SEE their editor, cursor and selection below, and you can TYPE into it and move around it (see "Editing the file").',
+    scratch ? `What the user says they're working on: ${req.questionPrompt.trim() || '(nothing stated yet — ask if it matters)'}` : `Current problem: "${req.questionTitle}"`,
+    scratch ? '' : req.questionPrompt,
     `Language: ${req.language}`,
     ...renderEditor(req),
     '',
@@ -91,7 +108,9 @@ export function buildAskSystemPrompt(req: AskRequest): string {
     '  <code to insert at the cursor, already indented for that spot; end with a newline when it is a whole line>',
     `  ${EDITOR_CMD.end}`,
     `- To rewrite the whole file (they will see a diff and accept or reject), use ${EDITOR_CMD.replace} … ${EDITOR_CMD.end} with the full file.`,
-    '- At most one block per reply. Outside the block, say in one short sentence what you did. Never read code aloud.',
+    `- To move their caret: ${EDITOR_CMD.goto}12${EDITOR_CMD.end}. To highlight lines for them (e.g. "look at the inner loop"): ${EDITOR_CMD.select}4-6${EDITOR_CMD.end}.`,
+    '  Highlighted lines become the selection for the next turn, so this is how you point at code.',
+    '- At most one INSERT/REPLACE block per reply (GOTO/SELECT may accompany it). Outside the blocks, say in one short sentence what you did. Never read code aloud.',
     '- Only do this when asked (or when they clearly want the code typed). Otherwise coach in words.',
     '- If their code is wrong, say so plainly and point at the line number.'
   ]

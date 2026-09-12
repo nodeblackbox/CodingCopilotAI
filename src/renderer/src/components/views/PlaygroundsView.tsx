@@ -20,6 +20,7 @@ export function PlaygroundsView() {
   const newPlayground = useAppStore((s) => s.newPlayground)
   const openPlayground = useAppStore((s) => s.openPlayground)
   const setView = useAppStore((s) => s.setView)
+  const startScratch = useAppStore((s) => s.startScratch)
 
   useEffect(() => {
     void loadPlaygrounds()
@@ -30,6 +31,9 @@ export function PlaygroundsView() {
       <div className="mb-1 flex items-center gap-3">
         <h1 className="text-[22px] font-semibold tracking-tight">Playgrounds</h1>
         <div className="flex-1" />
+        <Button size="sm" variant="outline" onClick={startScratch}>
+          Free coding
+        </Button>
         <Button size="sm" variant="outline" onClick={() => setView('library')}>
           Pick a question
         </Button>

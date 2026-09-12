@@ -29,6 +29,7 @@ export function CopilotPanel({ width }: { width: number }) {
   const settings = useAppStore((s) => s.settings)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const cursor = useAppStore((s) => s.editorState.cursor)
+  const selectionRange = useAppStore((s) => s.editorState.selectionRange)
   const usage = useAppStore((s) => s.usage)
   const pausedReason = useAppStore((s) => s.pausedReason)
   const clearPaused = useAppStore((s) => s.clearPaused)
@@ -43,8 +44,16 @@ export function CopilotPanel({ width }: { width: number }) {
         <div className="mb-3 flex items-center gap-2">
           <Bot size={15} className="text-teal-400" />
           <span className="text-[13.5px] font-medium">AI Copilot</span>
-          <span className="ml-auto font-mono text-[10.5px] text-zinc-600" title="The copilot sees your caret position with every message">
-            Ln {cursor.line}, Col {cursor.column}
+          <span
+            data-testid="caret-readout"
+            className={`ml-auto font-mono text-[10.5px] ${selectionRange ? 'text-teal-300' : 'text-zinc-600'}`}
+            title={selectionRange ? 'These highlighted lines go with your next message' : 'The copilot sees your caret position with every message'}
+          >
+            {selectionRange
+              ? selectionRange.startLine === selectionRange.endLine
+                ? `Sel L${selectionRange.startLine}`
+                : `Sel L${selectionRange.startLine}–${selectionRange.endLine}`
+              : `Ln ${cursor.line}, Col ${cursor.column}`}
           </span>
         </div>
         <div className="mb-2 flex items-center gap-2">

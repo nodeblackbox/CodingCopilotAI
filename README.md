@@ -83,6 +83,17 @@ holds the keys. The sidecar is ears and mouth only, so it stays dumb, fast, and 
   `<<<INSERT>>> … <<<END>>>` (typed at your caret, undoable with Ctrl+Z) or `<<<REPLACE>>> … <<<END>>>`
   (goes through the Accept/Reject diff). The renderer strips the block from what's shown and spoken, so Ava never
   reads code aloud (`splitEditorCommands` in `state/store.ts`, `lib/editorBridge.ts`).
+- **Highlighting is first-class.** Selected lines are marked `▌` in the listing the model sees, the exact
+  selected text is quoted with "when they say *this* they mean this", and the copilot header shows
+  `Sel L3–7`. Selection is read straight from Monaco at send time. Chips ("Explain") scope to the selection.
+- **Navigation by voice/chat, no model call:** "go to line 12", "highlight lines 3 to 7", "select line 5"
+  are executed locally and instantly (`parseNavIntents` in `state/store.ts`); if the message is only
+  navigation the model isn't consulted at all. "Highlight 3 to 7 and explain it" highlights first, then asks.
+  The model can also emit `<<<GOTO>>>12<<<END>>>` / `<<<SELECT>>>4-6<<<END>>>` to point at code.
+- **Free coding mode** (Library → "Free coding", or Playgrounds): no problem statement; a notes box on the
+  left ("what I'm working on") is sent with every turn instead.
+- **Blank template vs. starter attempt:** buttons under the constraints swap the buffer between the
+  signature-only template and the starter (e.g. Two Sum's brute force to optimise from).
 - **It sees what you changed, not just the new snapshot:** each turn also carries a `+/-` diff of the editor
   since the assistant's previous reply (`describeChanges` in `lib/diffLines.ts`). There is nothing to save —
   the live buffer is read at the moment you send (or finish speaking).

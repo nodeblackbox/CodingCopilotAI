@@ -1,8 +1,10 @@
 /**
  * The one place that holds a reference to the live Monaco editor, so non-React code (the store, voice
- * commands) can type into it. Edits go through executeEdits, so Ctrl+Z undoes them like any keystroke.
+ * commands) can type into it, move the caret, highlight lines, and read the caret/selection synchronously.
+ * Edits go through executeEdits, so Ctrl+Z undoes them like any keystroke.
  */
 import type { editor as MonacoEditor } from 'monaco-editor'
+import type { CursorInfo, SelectionRange } from '@shared/types'
 
 type Editor = MonacoEditor.IStandaloneCodeEditor
 
@@ -14,6 +16,27 @@ export function attachEditor(editor: Editor | null): void {
 
 export function hasEditor(): boolean {
   return current !== null
+}
+
+export interface EditorSnapshot {
+  cursor: CursorInfo
+  selection: string
+  selectionRange: SelectionRange | null
+}
+
+/** Caret + selection right now (not the throttled copy in the store). Null when no editor is mounted. */
+export function readEditorState(): EditorSnapshot | null {
+  if (!current) return null
+  const pos = current.getPosition()
+  const sel = current.getSelection()
+  const model = current.getModel()
+  if (!pos || !model) return null
+  const hasSel = sel !== null && !sel.isEmpty()
+  return {
+    cursor: { line: pos.lineNumber, column: pos.column },
+    selection: hasSel ? model.getValueInRange(sel) : '',
+    selectionRange: hasSel ? { startLine: sel.startLineNumber, endLine: sel.endLineNumber } : null
+  }
 }
 
 /** Insert at the cursor (replacing the selection if there is one). Returns the line it landed on, or null. */
@@ -46,4 +69,35 @@ export function insertAtCursor(text: string): number | null {
 
 export function revealLine(line: number): void {
   current?.revealLineInCenter(line)
+}
+
+/** Move the caret to a line (clamped) and scroll it into view. Returns the line actually reached. */
+export function gotoLine(line: number): number | null {
+  if (!current) return null
+  const model = current.getModel()
+  if (!model) return null
+  const n = Math.max(1, Math.min(model.getLineCount(), Math.floor(line)))
+  current.setPosition({ lineNumber: n, column: 1 })
+  current.revealLineInCenter(n)
+  current.focus()
+  return n
+}
+
+/** Highlight whole lines a..b (inclusive, clamped, either order). Returns the range actually selected. */
+export function selectLines(a: number, b: number): SelectionRange | null {
+  if (!current) return null
+  const model = current.getModel()
+  if (!model) return null
+  const max = model.getLineCount()
+  const start = Math.max(1, Math.min(max, Math.min(a, b)))
+  const end = Math.max(1, Math.min(max, Math.max(a, b)))
+  current.setSelection({
+    startLineNumber: start,
+    startColumn: 1,
+    endLineNumber: end,
+    endColumn: model.getLineMaxColumn(end)
+  })
+  current.revealLinesInCenter(start, end)
+  current.focus()
+  return { startLine: start, endLine: end }
 }

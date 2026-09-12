@@ -12,13 +12,14 @@ import type {
   UsageSummary,
   VoiceSidecarState
 } from '@shared/types'
-import { ANTHROPIC_MODELS, EDITOR_CMD } from '@shared/types'
-import { QUESTIONS, questionById, starterFor } from '@renderer/data/questions'
+import type { SelectionRange } from '@shared/types'
+import { ANTHROPIC_MODELS, EDITOR_CMD, SCRATCH_QUESTION_ID } from '@shared/types'
+import { QUESTIONS, SCRATCH, isScratch, questionById, starterFor, templateFor } from '@renderer/data/questions'
 import { CHIP_DEFS } from '@renderer/data/chips'
 import { uid } from '@renderer/lib/utils'
 import { SentenceChunker } from '@renderer/lib/sentenceChunker'
 import { VoiceClient } from '@renderer/lib/voiceClient'
-import { insertAtCursor, revealLine } from '@renderer/lib/editorBridge'
+import { gotoLine, insertAtCursor, readEditorState, revealLine, selectLines } from '@renderer/lib/editorBridge'
 import { describeChanges } from '@renderer/lib/diffLines'
 
 /** The editor text as of the last turn we sent, so the next turn can say what changed. */
@@ -115,8 +116,14 @@ interface AppState {
   autosave: 'saved' | 'saving'
   openQuestion: (id: string) => void
   /** Live caret + selection from Monaco, shipped with every chat/voice turn so the copilot knows where you are. */
-  editorState: { cursor: CursorInfo; selection: string }
-  setEditorState: (s: { cursor: CursorInfo; selection: string }) => void
+  editorState: { cursor: CursorInfo; selection: string; selectionRange: SelectionRange | null }
+  setEditorState: (s: { cursor: CursorInfo; selection: string; selectionRange: SelectionRange | null }) => void
+  /** Free coding: what the user says they're working on (sent instead of a problem statement). */
+  scratchNotes: string
+  setScratchNotes: (notes: string) => void
+  startScratch: () => void
+  /** Swap the buffer for the blank signature template or the starter attempt. */
+  resetCode: (variant: 'template' | 'starter') => void
 
   // agent chips
   activeChip: ChipId | null
@@ -205,8 +212,64 @@ function looksLikeEcho(transcript: string): boolean {
 }
 
 interface EditorCommand {
-  kind: 'insert' | 'replace'
+  kind: 'insert' | 'replace' | 'goto' | 'select'
   code: string
+}
+
+const CMD_MARKERS: Array<{ kind: EditorCommand['kind']; marker: string }> = [
+  { kind: 'insert', marker: EDITOR_CMD.insert },
+  { kind: 'replace', marker: EDITOR_CMD.replace },
+  { kind: 'goto', marker: EDITOR_CMD.goto },
+  { kind: 'select', marker: EDITOR_CMD.select }
+]
+
+type NavAction = { kind: 'goto'; line: number } | { kind: 'select'; a: number; b: number }
+
+/**
+ * "go to line 12", "highlight lines 3 to 7", "select line 5": handled locally and instantly, no model call.
+ * Returns the actions found and whether the message was ONLY navigation (then the model isn't consulted).
+ */
+export function parseNavIntents(text: string): { actions: NavAction[]; navOnly: boolean } {
+  const actions: NavAction[] = []
+  let rest = ` ${text} `
+  const select = /\b(?:highlight|select|mark|grab)\s+(?:from\s+)?lines?\s+(\d+)\s*(?:to|-|–|through|thru|and|till|until)\s*(?:line\s+)?(\d+)/gi
+  const selectOne = /\b(?:highlight|select|mark|grab)\s+line\s+(\d+)\b(?!\s*(?:to|-|–|through|thru|and|till|until))/gi
+  const goto = /\b(?:go|jump|move|scroll|take me|bring me)\s*(?:to|on|onto)?\s*line\s+(\d+)/gi
+  rest = rest.replace(select, (_m, a: string, b: string) => {
+    actions.push({ kind: 'select', a: Number(a), b: Number(b) })
+    return ' '
+  })
+  rest = rest.replace(selectOne, (_m, a: string) => {
+    actions.push({ kind: 'select', a: Number(a), b: Number(a) })
+    return ' '
+  })
+  rest = rest.replace(goto, (_m, n: string) => {
+    actions.push({ kind: 'goto', line: Number(n) })
+    return ' '
+  })
+  const filler = /\b(please|can you|could you|would you|ok|okay|yo|hey|now|then|and|also|just|for me|the|um|uh|alright|right|so)\b/gi
+  const leftover = rest.replace(filler, ' ').replace(/[^a-z0-9]+/gi, ' ').trim()
+  return { actions, navOnly: actions.length > 0 && leftover.split(/\s+/).filter(Boolean).length <= 1 }
+}
+
+function runNavActions(actions: NavAction[]): string[] {
+  const notes: string[] = []
+  for (const act of actions) {
+    if (act.kind === 'goto') {
+      const line = gotoLine(act.line)
+      notes.push(line === null ? 'No editor open.' : `Went to line ${line}.`)
+    } else {
+      const range = selectLines(act.a, act.b)
+      notes.push(
+        range === null
+          ? 'No editor open.'
+          : range.startLine === range.endLine
+            ? `Highlighted line ${range.startLine}.`
+            : `Highlighted lines ${range.startLine}–${range.endLine}.`
+      )
+    }
+  }
+  return notes
 }
 
 /**
@@ -219,24 +282,20 @@ export function splitEditorCommands(raw: string): { visible: string; commands: E
   let visible = ''
   let pos = 0
   for (;;) {
-    const iIns = raw.indexOf(EDITOR_CMD.insert, pos)
-    const iRep = raw.indexOf(EDITOR_CMD.replace, pos)
-    const starts = [iIns, iRep].filter((i) => i >= 0)
-    if (!starts.length) {
+    const found = CMD_MARKERS.map((m) => ({ ...m, at: raw.indexOf(m.marker, pos) })).filter((m) => m.at >= 0)
+    if (!found.length) {
       // Hide a marker that is still being typed out ("<<<INS").
       const tail = raw.slice(pos)
       const partial = tail.lastIndexOf('<<<')
       visible += partial >= 0 && !tail.slice(partial).includes('>>>') ? tail.slice(0, partial) : tail
       break
     }
-    const start = Math.min(...starts)
-    const kind: EditorCommand['kind'] = start === iIns ? 'insert' : 'replace'
-    const marker = kind === 'insert' ? EDITOR_CMD.insert : EDITOR_CMD.replace
-    visible += raw.slice(pos, start)
-    const end = raw.indexOf(EDITOR_CMD.end, start + marker.length)
+    const first = found.reduce((a, b) => (b.at < a.at ? b : a))
+    visible += raw.slice(pos, first.at)
+    const end = raw.indexOf(EDITOR_CMD.end, first.at + first.marker.length)
     if (end < 0) break // block still streaming
-    const code = raw.slice(start + marker.length, end).replace(/^\r?\n/, '').replace(/\s+$/, '')
-    commands.push({ kind, code })
+    const code = raw.slice(first.at + first.marker.length, end).replace(/^\r?\n/, '').replace(/\s+$/, '')
+    commands.push({ kind: first.kind, code })
     pos = end + EDITOR_CMD.end.length
   }
   return { visible: visible.replace(/\n{3,}/g, '\n\n'), commands }
@@ -283,6 +342,19 @@ export const useAppStore = create<AppState>((set, get) => {
   }
 
   const applyEditorCommand = (cmd: EditorCommand): string => {
+    if (cmd.kind === 'goto') {
+      const n = Number.parseInt(cmd.code, 10)
+      if (!Number.isFinite(n)) return ''
+      const line = gotoLine(n)
+      return line === null ? '' : ` _(→ line ${line})_`
+    }
+    if (cmd.kind === 'select') {
+      const m = cmd.code.match(/(\d+)\s*(?:-|–|to|,)?\s*(\d+)?/)
+      if (!m) return ''
+      const range = selectLines(Number(m[1]), Number(m[2] ?? m[1]))
+      if (!range) return ''
+      return range.startLine === range.endLine ? ` _(highlighted line ${range.startLine})_` : ` _(highlighted lines ${range.startLine}–${range.endLine})_`
+    }
     if (cmd.kind === 'replace') {
       set({
         proposedCode: cmd.code,
@@ -449,8 +521,29 @@ export const useAppStore = create<AppState>((set, get) => {
         set({ autosave: 'saved' })
       }, 500)
     },
-    editorState: { cursor: { line: 1, column: 1 }, selection: '' },
+    editorState: { cursor: { line: 1, column: 1 }, selection: '', selectionRange: null },
     setEditorState: (editorState) => set({ editorState }),
+    scratchNotes: '',
+    setScratchNotes: (scratchNotes) => set({ scratchNotes }),
+    startScratch: () => {
+      get().cancelReply()
+      codeAtLastTurn = null
+      set({
+        question: SCRATCH,
+        code: starterFor(SCRATCH, get().language),
+        currentPlaygroundId: null,
+        messages: [{ role: 'assistant', text: "Free coding — no problem loaded. Tell me what you're working on (the notes box on the left goes with every turn) or just start typing." }],
+        activeChip: null,
+        chipResult: null,
+        diffVisible: false,
+        proposedCode: '',
+        view: 'workspace'
+      })
+    },
+    resetCode: (variant) => {
+      const { question, language } = get()
+      set({ code: variant === 'template' ? templateFor(question, language) : starterFor(question, language), diffVisible: false, proposedCode: '' })
+    },
     openQuestion: (id) => {
       const q = questionById(id)
       if (!q) return
@@ -477,17 +570,21 @@ export const useAppStore = create<AppState>((set, get) => {
     proposedCode: '',
     selectChip: async (chipId) => {
       const def = CHIP_DEFS.find((c) => c.id === chipId)!
-      const { question, language, code } = get()
+      const { question, language, code, scratchNotes } = get()
       set({ activeChip: chipId, chipLoading: true, chipResult: null })
       if (def.diff) set({ diffVisible: true, diffState: 'pending', proposedCode: '' })
       else set({ diffVisible: false })
 
+      const snap = readEditorState()
       const res = await window.api.ai.chip({
         chipId,
         questionTitle: question.title,
-        questionPrompt: question.prompt,
+        questionPrompt: isScratch(question)
+          ? `Free coding session (no assigned problem). The user says they're working on: ${scratchNotes || '(not stated)'}`
+          : question.prompt,
         language,
-        code
+        // A highlighted region scopes the chip: "Explain problem" on a selection explains that code.
+        code: snap?.selection ? `${code}\n\n# The user has HIGHLIGHTED lines ${snap.selectionRange?.startLine}-${snap.selectionRange?.endLine}; focus on them:\n${snap.selection}` : code
       })
 
       set((s) => ({
@@ -521,7 +618,23 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!trimmed) return
       get().cancelReply() // a new turn always supersedes the previous reply (typed or spoken)
       set({ pausedReason: null })
-      const { question, language, code, settings, messages, editorState } = get()
+
+      // Navigation ("go to line 12", "highlight lines 3 to 7") is done locally first, so the model sees the
+      // result; when that's all the message was, no model call is made at all.
+      const nav = parseNavIntents(trimmed)
+      if (nav.actions.length) {
+        const notes = runNavActions(nav.actions)
+        if (nav.navOnly) {
+          const reply = notes.join(' ')
+          set((s) => ({ messages: [...s.messages, { role: 'user', text: trimmed }, { role: 'assistant', text: reply }] }))
+          if (opts.speak) void get().speakText(reply)
+          return
+        }
+      }
+
+      const { question, language, code, settings, messages, scratchNotes } = get()
+      // Read the caret/selection straight from Monaco (the store copy is throttled and could be 120 ms stale).
+      const editorState = readEditorState() ?? get().editorState
       const history: ChatMessage[] = [...messages, { role: 'user', text: trimmed }]
       const requestId = uid()
       liveStream = { requestId, speak: Boolean(opts.speak), chunker: new SentenceChunker(), raw: '', visibleLen: 0, executed: 0, notes: '' }
@@ -534,11 +647,13 @@ export const useAppStore = create<AppState>((set, get) => {
         guidedVoice: settings.guidedVoice,
         spoken: Boolean(opts.speak),
         questionTitle: question.title,
-        questionPrompt: question.prompt,
+        questionPrompt: isScratch(question) ? scratchNotes : question.prompt,
+        mode: isScratch(question) ? 'scratch' : 'interview',
         language,
         code,
         cursor: editorState.cursor,
         selection: editorState.selection,
+        selectionRange: editorState.selectionRange ?? undefined,
         recentChanges
       })
     },
@@ -699,7 +814,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!playground) return
       get().cancelReply()
       codeAtLastTurn = null
-      const question = questionById(playground.questionId) ?? QUESTIONS[0]
+      const question = (playground.questionId === SCRATCH_QUESTION_ID ? SCRATCH : questionById(playground.questionId)) ?? QUESTIONS[0]
       const file = playground.files.find((f) => f.name === playground.activeFile) ?? playground.files[0]
       set({
         currentPlaygroundId: id,

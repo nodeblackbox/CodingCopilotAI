@@ -1,12 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Editor, { type Monaco, type OnMount } from '@monaco-editor/react'
-import type { IDisposable } from 'monaco-editor'
+import type { IDisposable, editor as MonacoEditor } from 'monaco-editor'
 import { Play, Sparkles, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/Button'
 import { DiffPanel } from './DiffPanel'
 import { TerminalDrawer } from './TerminalDrawer'
 import { useAppStore } from '@renderer/state/store'
-import { attachEditor } from '@renderer/lib/editorBridge'
+import { attachEditor, readEditorState } from '@renderer/lib/editorBridge'
 
 const LANGUAGES = [
   { id: 'python', label: 'Python' },
@@ -57,7 +57,7 @@ function recentConversation(): string {
 function registerInlineCompletions(monaco: Monaco): IDisposable[] {
   const provider = {
     provideInlineCompletions: async (
-      model: import('monaco-editor').editor.ITextModel,
+      model: MonacoEditor.ITextModel,
       position: import('monaco-editor').Position,
       _ctx: unknown,
       token: import('monaco-editor').CancellationToken
@@ -115,32 +115,36 @@ export function EditorColumn() {
   const inlineOn = useAppStore((s) => s.settings.inlineCompletions)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const setEditorState = useAppStore((s) => s.setEditorState)
-  const disposables = useRef<IDisposable[]>([])
 
-  const onMount: OnMount = (editor, monaco) => {
-    disposables.current.forEach((d) => d.dispose())
+  // The editor instance lives in React state so the effect below re-runs after React StrictMode's
+  // mount → cleanup → mount cycle in development. Registering inside onMount and disposing in an effect
+  // cleanup looked fine but left the app with NO cursor listener and NO ghost-text provider in `npm run dev`
+  // (turns.jsonl showed every turn at L1:C1 with no selection).
+  const [instance, setInstance] = useState<{ editor: MonacoEditor.IStandaloneCodeEditor; monaco: Monaco } | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const onMount: OnMount = (editor, monaco) => setInstance({ editor, monaco })
+
+  useEffect(() => {
+    if (!instance) return
+    const { editor, monaco } = instance
     attachEditor(editor)
-    // Caret + selection go to the store (throttled) so every chat/voice turn knows where the user is.
-    let timer: ReturnType<typeof setTimeout> | null = null
     const pushState = (): void => {
-      const pos = editor.getPosition()
-      const sel = editor.getSelection()
-      const model = editor.getModel()
-      if (!pos || !model) return
-      setEditorState({
-        cursor: { line: pos.lineNumber, column: pos.column },
-        selection: sel && !sel.isEmpty() ? model.getValueInRange(sel) : ''
-      })
+      const snap = readEditorState()
+      if (snap) setEditorState(snap)
     }
     const cursorSub = editor.onDidChangeCursorSelection(() => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(pushState, 120)
+      if (timer.current) clearTimeout(timer.current)
+      timer.current = setTimeout(pushState, 120)
     })
     pushState()
-    disposables.current = [...registerInlineCompletions(monaco), cursorSub, { dispose: () => attachEditor(null) }]
-  }
-
-  useEffect(() => () => disposables.current.forEach((d) => d.dispose()), [])
+    const inline = registerInlineCompletions(monaco)
+    return () => {
+      cursorSub.dispose()
+      inline.forEach((d) => d.dispose())
+      attachEditor(null)
+    }
+  }, [instance, setEditorState])
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-[#0a0c11]">
@@ -198,6 +202,8 @@ export function EditorColumn() {
               smoothScrolling: true,
               automaticLayout: true,
               scrollBeyondLastLine: false,
+              selectionHighlight: true,
+              renderLineHighlight: 'all',
               inlineSuggest: { enabled: true, showToolbar: 'onHover' },
               suggest: { preview: true }
             }}

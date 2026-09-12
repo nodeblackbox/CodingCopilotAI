@@ -54,6 +54,14 @@ export interface CursorInfo {
   column: number
 }
 
+export interface SelectionRange {
+  startLine: number
+  endLine: number
+}
+
+/** A pseudo-question for free coding: no problem statement, the user says what they're working on. */
+export const SCRATCH_QUESTION_ID = 'scratch'
+
 export interface AskRequest {
   messages: ChatMessage[]
   guidedVoice: boolean
@@ -67,8 +75,12 @@ export interface AskRequest {
   cursor?: CursorInfo
   /** Currently selected text, if any. */
   selection?: string
+  /** Line span of that selection, so the listing can mark it. */
+  selectionRange?: SelectionRange
   /** Unified-style +/- lines describing what the user changed since the assistant's previous reply. */
   recentChanges?: string
+  /** 'scratch' = free coding with no assigned problem; questionPrompt then holds the user's own notes. */
+  mode?: 'interview' | 'scratch'
 }
 
 /**
@@ -79,6 +91,10 @@ export interface AskRequest {
 export const EDITOR_CMD = {
   insert: '<<<INSERT>>>',
   replace: '<<<REPLACE>>>',
+  /** Body: a line number. Moves the caret there and scrolls it into view. */
+  goto: '<<<GOTO>>>',
+  /** Body: "A-B" (or a single line). Highlights those lines; they become the selection for the next turn. */
+  select: '<<<SELECT>>>',
   end: '<<<END>>>'
 } as const
 
@@ -233,6 +249,8 @@ export interface Question {
   examples: QuestionExample[]
   constraints: string[]
   starterCode: Record<string, string>
+  /** Signature-only version of starterCode (no solution attempt), when the starter contains one. */
+  templateCode?: Record<string, string>
   status: 'solved' | 'attempted' | 'not_started'
 }
 

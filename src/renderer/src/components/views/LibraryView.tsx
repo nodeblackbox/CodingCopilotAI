@@ -16,6 +16,7 @@ const FILTERS = ['All', 'Easy', 'Medium', 'Hard'] as const
 export function LibraryView() {
   const openQuestion = useAppStore((s) => s.openQuestion)
   const newPlayground = useAppStore((s) => s.newPlayground)
+  const startScratch = useAppStore((s) => s.startScratch)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('All')
 
@@ -31,6 +32,14 @@ export function LibraryView() {
       <div className="mb-1 flex items-center gap-3">
         <h1 className="text-[22px] font-semibold tracking-tight">Question library</h1>
         <span className="text-[12px] text-zinc-600">{QUESTIONS.length} questions</span>
+        <div className="flex-1" />
+        <button
+          data-testid="free-coding"
+          onClick={startScratch}
+          className="rounded-md border border-white/[0.1] px-3 py-1.5 text-[12.5px] text-zinc-300 hover:border-teal-400/30 hover:text-teal-300"
+        >
+          Free coding (no question)
+        </button>
       </div>
       <p className="mb-5 text-[13px] text-zinc-500">
         Open a question in the workspace, or start a fresh saved attempt with “Practice”.
