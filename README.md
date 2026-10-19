@@ -17,9 +17,9 @@ An interview-prep IDE with a voice: a real Monaco editor, a LeetCode-style probl
 
 <br />
 
-<img src="docs/media/demo.gif" alt="Prep in action: highlight lines, ask the copilot to explain them, optimize with a one-click diff" width="900" />
+<img src="docs/media/demo-tour.gif" alt="Prep in action: question library, playgrounds, voice navigation, highlight and explain, ghost text, agent chips" width="900" />
 
-<sub>Real app, real model calls. Recorded with <a href="scripts/record-demo.mjs"><code>scripts/record-demo.mjs</code></a>.</sub>
+<sub>A 17-second tour of the real app: library, playgrounds, voice navigation, highlight and explain, ghost text, agent chips.</sub>
 
 </div>
 
@@ -100,7 +100,7 @@ Provider, model, help style, ghost-text style, voice and the daily budget are ch
 | `npm run typecheck` · `npm run lint` · `npm test` | Static checks and unit tests (no API calls) |
 | `npm run smoke` | Drives the **built** app end to end with Playwright (about 10k tokens) |
 | `npm run logs` | Read per-run session logs without opening them raw |
-| `npm run demo` | Re-records the README demo on a throwaway profile (`DEMO_PROVIDER=groq OUT_DIR=docs/media`) |
+| `npm run demo` | Re-records the README screenshots on a throwaway profile (screenshots; set `DEMO_PROVIDER` and `OUT_DIR`) |
 
 ## How it works
 

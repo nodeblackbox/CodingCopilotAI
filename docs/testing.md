@@ -11,7 +11,7 @@
 | `node scripts/coach-check.mjs` | yes | real-model check of the coach rules on situations taken from real sessions |
 | `node scripts/copilot-ui-check.mjs` | yes | copilot panel UI behaviour |
 | `node scripts/ghost-check.mjs` | yes | ghost text end to end |
-| `npm run demo` | yes | records the README demo (`DEMO_PROVIDER`, `OUT_DIR` env vars) |
+| `npm run demo` | yes | records the README screenshots and a raw .webm (`DEMO_PROVIDER`, `OUT_DIR` env vars) |
 
 The behaviour checks and the demo recorder use a **throwaway profile** (`--user-data-dir`), so your settings, playgrounds and logs are untouched.
 
