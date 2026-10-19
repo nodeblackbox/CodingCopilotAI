@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { IPC } from '@shared/types'
 import type { VoiceSidecarState } from '@shared/types'
 import { logger } from '@main/logger'
+import { sessionLog } from '@main/services/sessionLog'
 
 /**
  * Lifecycle of the Python voice sidecar (voice/server.py): spawn, discover its port from stdout,
@@ -14,8 +15,28 @@ import { logger } from '@main/logger'
 let child: ChildProcess | null = null
 let state: VoiceSidecarState = { status: 'off', port: null }
 let startPromise: Promise<VoiceSidecarState> | null = null
+/** Set when WE kill the sidecar (quit, stop button, start timeout) so its exit isn't reported as a crash. */
+let stopping = false
+
+/** `@ev {json}` lines from voice/server.py's jlog() become structured session events; anything else is raw text. */
+function handleSidecarLine(line: string): void {
+  if (line.startsWith('@ev ')) {
+    try {
+      const { ev, ...data } = JSON.parse(line.slice(4)) as { ev: string } & Record<string, unknown>
+      const bad = /crash|error|gave_up|failed/.test(ev)
+      sessionLog('sidecar', ev, data, bad ? 'error' : 'info')
+      return
+    } catch {
+      // fall through and keep the raw line
+    }
+  }
+  logger.info('voice:py', line)
+}
 
 function broadcast(next: VoiceSidecarState): void {
+  if (next.status !== state.status || next.message !== state.message) {
+    sessionLog('voice', 'sidecar_state', { status: next.status, port: next.port, message: next.message }, next.status === 'error' ? 'error' : 'info')
+  }
   state = next
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.voiceStateChanged, state)
@@ -70,7 +91,7 @@ export function startVoiceSidecar(): Promise<VoiceSidecarState> {
     child.stdout?.on('data', (buf: Buffer) => {
       for (const line of buf.toString('utf8').split(/\r?\n/)) {
         if (!line) continue
-        logger.info('voice:py', line)
+        handleSidecarLine(line)
         const m = line.match(/^VOICE_PORT=(\d+)/)
         if (m) {
           clearTimeout(timer)
@@ -88,9 +109,12 @@ export function startVoiceSidecar(): Promise<VoiceSidecarState> {
     })
     child.on('exit', (code) => {
       clearTimeout(timer)
-      logger.info('voice', `Sidecar exited with code ${code}`)
+      const intentional = stopping
+      stopping = false
+      logger.info('voice', `Sidecar exited with code ${code}${intentional ? ' (requested)' : ''}`)
       child = null
-      const msg = code === 0 ? undefined : `Voice server exited with code ${code} — see main.log`
+      if (intentional) code = 0
+      const msg = code === 0 ? undefined : `Voice server exited with code ${code} — see the session log (Debug menu → Open logs folder)`
       finish({ status: code === 0 ? 'off' : 'error', port: null, message: msg })
       if (settled) broadcast({ status: code === 0 ? 'off' : 'error', port: null, message: msg })
     })
@@ -102,6 +126,7 @@ export function startVoiceSidecar(): Promise<VoiceSidecarState> {
 export function stopVoiceSidecar(): void {
   if (child) {
     logger.info('voice', 'Stopping sidecar')
+    stopping = true
     child.kill()
     child = null
   }

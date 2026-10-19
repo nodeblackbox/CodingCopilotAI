@@ -13,7 +13,9 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint . --ext .ts,.tsx",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "logs": "node scripts/logs.mjs",
+    "test": "node --test scripts/inline.test.mjs scripts/voice.test.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

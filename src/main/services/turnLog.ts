@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AskRequest, CursorInfo } from '@shared/types'
 import { logger } from '@main/logger'
+import { sessionLog } from '@main/services/sessionLog'
 
 /**
  * One JSON line per chat/voice turn in <userData>/turns.jsonl: exactly what the model was shown (code
@@ -16,6 +17,10 @@ export interface TurnRecord {
   model: string
   spoken: boolean
   guided: boolean
+  helpStyle?: string
+  solutionUnlocked?: boolean
+  notes?: string[]
+  lastRun?: string
   cursor?: CursorInfo
   selection?: string
   recentChanges?: string
@@ -47,6 +52,10 @@ export function logTurn(
     model: meta.model,
     spoken: Boolean(req.spoken),
     guided: req.guidedVoice,
+    helpStyle: req.helpStyle,
+    solutionUnlocked: req.solutionUnlocked || undefined,
+    notes: req.notes?.length ? req.notes : undefined,
+    lastRun: req.lastRun || undefined,
     cursor: req.cursor,
     selection: req.selection || undefined,
     recentChanges: req.recentChanges || undefined,
@@ -59,6 +68,31 @@ export function logTurn(
     cancelled: outcome.cancelled,
     ms: Date.now() - meta.startedAt
   }
+  // Compact pointer into the session timeline; the full prompt (code snapshot, history) stays in turns.jsonl.
+  sessionLog(
+    'ai',
+    'turn',
+    {
+      requestId: rec.requestId,
+      provider: rec.provider,
+      model: rec.model,
+      spoken: rec.spoken,
+      helpStyle: rec.helpStyle,
+      solutionUnlocked: rec.solutionUnlocked,
+      notes: rec.notes?.length,
+      hasRunOutput: Boolean(rec.lastRun),
+      ms: rec.ms,
+      codeChars: rec.codeChars,
+      historyCount: rec.historyCount,
+      cursor: rec.cursor,
+      hasSelection: Boolean(rec.selection),
+      hadChangesDiff: Boolean(rec.recentChanges),
+      replyChars: rec.reply.length,
+      error: rec.error,
+      cancelled: rec.cancelled
+    },
+    rec.error ? 'error' : 'info'
+  )
   try {
     appendFileSync(path(), JSON.stringify(rec) + '\n', 'utf8')
   } catch (err) {

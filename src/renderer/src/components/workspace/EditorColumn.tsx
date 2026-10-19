@@ -5,8 +5,12 @@ import { Play, Sparkles, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/Button'
 import { DiffPanel } from './DiffPanel'
 import { TerminalDrawer } from './TerminalDrawer'
-import { useAppStore } from '@renderer/state/store'
+import { recentSpokenIntent, useAppStore } from '@renderer/state/store'
 import { attachEditor, readEditorState } from '@renderer/lib/editorBridge'
+import { slog } from '@renderer/lib/sessionLog'
+import { EDITOR_THEME, applyGhostStyle } from '@renderer/lib/ghostStyle'
+import { INLINE_CONTEXT, INLINE_SCOPES, inlineContextKind, partialWordBefore, resolvePartialWord } from '@shared/inline'
+import type { InlineScope, Settings } from '@shared/types'
 
 const LANGUAGES = [
   { id: 'python', label: 'Python' },
@@ -32,19 +36,51 @@ const FILE_EXT: Record<string, string> = {
   cpp: 'cpp'
 }
 
-const INLINE_DEBOUNCE_MS = 350
-const CONTEXT_LINES_BEFORE = 80
-const CONTEXT_LINES_AFTER = 30
+/** Ghost-text telemetry, rolled up once a minute so a typing session doesn't flood the log (errors are logged individually). */
+const inlineStats = { requests: 0, shown: 0, empty: 0, stale: 0, skipped: 0, errors: 0, msTotal: 0, msMax: 0, chars: 0 }
+function flushInlineStats(): void {
+  if (!inlineStats.requests && !inlineStats.skipped) return
+  const s = useAppStore.getState().settings
+  slog('ai', 'inline_stats', {
+    ...inlineStats,
+    msAvg: inlineStats.requests ? Math.round(inlineStats.msTotal / inlineStats.requests) : 0,
+    msTotal: undefined,
+    scope: s.inlineScope,
+    trigger: s.inlineTrigger
+  })
+  Object.assign(inlineStats, { requests: 0, shown: 0, empty: 0, stale: 0, skipped: 0, errors: 0, msTotal: 0, msMax: 0, chars: 0 })
+}
+setInterval(flushInlineStats, 60_000)
+
 const CONVERSATION_TURNS = 6
 
 /** Bumped per keystroke; a request that finishes after a newer one started is thrown away. */
 let inlineSeq = 0
 
-/** The last few chat/voice turns, so ghost text follows what the user and the coach just agreed on. */
-function recentConversation(): string {
+/**
+ * A spelling fix waiting to be offered. Monaco never draws ghost text that inserts characters BEFORE the caret,
+ * and correcting "recie" → "receive" must do exactly that — so a correction is shown in the suggestion popup
+ * instead (Tab accepts it, replacing what was typed). Correct prefixes ("rece" → "ive") stay ordinary ghost text.
+ */
+let pendingSpell: { uri: string; line: number; startCol: number; endCol: number; typed: string; fix: string } | null = null
+
+/** Keep the user's capitalisation: "Recie" → "Receive", "RECIE" → "RECEIVE". */
+function matchCase(word: string, typed: string): string {
+  if (typed.length > 1 && typed === typed.toUpperCase()) return word.toUpperCase()
+  if (typed[0] && typed[0] === typed[0].toUpperCase() && typed[0] !== typed[0].toLowerCase()) return word[0].toUpperCase() + word.slice(1)
+  return word
+}
+
+/**
+ * The last few turns, so ghost text follows what the user and the coach just agreed on. Honors the
+ * "conversation context" setting: nothing, only turns that were spoken aloud, or the whole thread.
+ */
+function recentConversation(mode: Settings['inlineChatContext']): string {
+  if (mode === 'off') return ''
   return useAppStore
     .getState()
-    .messages.slice(-CONVERSATION_TURNS)
+    .messages.filter((m) => mode === 'all' || m.source === 'voice')
+    .slice(-CONVERSATION_TURNS)
     .map((m) => `${m.role === 'user' ? 'user' : 'coach'}: ${m.text.replace(/\s+/g, ' ').slice(0, 300)}`)
     .join('\n')
 }
@@ -52,24 +88,32 @@ function recentConversation(): string {
 /**
  * Copilot-style ghost text. Monaco calls provideInlineCompletions on every edit; we debounce, ship the
  * code around the cursor (plus the recent conversation) to main, and hand back one suggestion.
- * Tab accepts it — that's Monaco's built-in inline-suggest UX, nothing custom here.
+ * Tab accepts it — that's Monaco's built-in inline-suggest UX, nothing custom here. What it may contain
+ * (word … block), where it appears (code / comments), when it fires (auto / Alt+\) and how it reads the
+ * conversation are all user settings; main enforces the length again with a hard trim.
  */
-function registerInlineCompletions(monaco: Monaco): IDisposable[] {
+function registerInlineCompletions(monaco: Monaco, editor: MonacoEditor.IStandaloneCodeEditor): IDisposable[] {
   const provider = {
     provideInlineCompletions: async (
       model: MonacoEditor.ITextModel,
       position: import('monaco-editor').Position,
-      _ctx: unknown,
+      ctx: { triggerKind: number },
       token: import('monaco-editor').CancellationToken
     ) => {
-      if (!useAppStore.getState().settings.inlineCompletions) return { items: [] }
+      const s = useAppStore.getState().settings
+      if (!s.inlineCompletions) return { items: [] }
+      const explicit = ctx.triggerKind === monaco.languages.InlineCompletionTriggerKind.Explicit
+      if (s.inlineTrigger === 'manual' && !explicit) return { items: [] }
       const seq = ++inlineSeq
-      await new Promise((r) => setTimeout(r, INLINE_DEBOUNCE_MS))
-      if (token.isCancellationRequested || seq !== inlineSeq) return { items: [] }
+      if (!explicit) {
+        await new Promise((r) => setTimeout(r, s.inlineDebounceMs))
+        if (token.isCancellationRequested || seq !== inlineSeq) return { items: [] }
+      }
 
-      const lastLine = Math.min(model.getLineCount(), position.lineNumber + CONTEXT_LINES_AFTER)
+      const ctxLines = INLINE_CONTEXT[s.inlineScope]
+      const lastLine = Math.min(model.getLineCount(), position.lineNumber + ctxLines.after)
       const prefix = model.getValueInRange({
-        startLineNumber: Math.max(1, position.lineNumber - CONTEXT_LINES_BEFORE),
+        startLineNumber: Math.max(1, position.lineNumber - ctxLines.before),
         startColumn: 1,
         endLineNumber: position.lineNumber,
         endColumn: position.column
@@ -82,18 +126,79 @@ function registerInlineCompletions(monaco: Monaco): IDisposable[] {
       })
       if (!prefix.trim()) return { items: [] }
 
-      const res = await window.api.ai.inlineComplete({
-        language: model.getLanguageId(),
-        prefix,
-        suffix,
-        questionTitle: useAppStore.getState().question.title,
-        conversation: recentConversation()
-      })
-      if (token.isCancellationRequested || seq !== inlineSeq || !res.text) return { items: [] }
+      const language = model.getLanguageId()
+      const kind = inlineContextKind(prefix, language)
+      if (kind === 'comment' ? !s.inlineInComments : !s.inlineInCode) {
+        inlineStats.skipped++
+        return { items: [] }
+      }
+      // The half-typed word under the caret (needed by main to drop an echo, and for spelling help in prose).
+      const typed = partialWordBefore(prefix)
+      const partial = typed.length >= 2 ? typed : ''
+      const spelling = s.inlineSpellAssist && kind === 'comment' && Boolean(partial)
+
+      const t0 = performance.now()
+      let res: { text: string }
+      inlineStats.requests++
+      try {
+        res = await window.api.ai.inlineComplete({
+          language,
+          prefix,
+          suffix,
+          questionTitle: useAppStore.getState().question.title,
+          conversation: recentConversation(s.inlineChatContext),
+          spokenIntent: s.inlineChatContext === 'off' ? undefined : recentSpokenIntent() || undefined,
+          partialWord: partial || undefined
+        })
+      } catch (err) {
+        inlineStats.errors++
+        slog('ai', 'inline_error', { message: (err as Error).message }, 'error')
+        return { items: [] }
+      }
+      const ms = Math.round(performance.now() - t0)
+      inlineStats.msTotal += ms
+      inlineStats.msMax = Math.max(inlineStats.msMax, ms)
+      if (token.isCancellationRequested || seq !== inlineSeq) {
+        inlineStats.stale++
+        return { items: [] }
+      }
+      if (!res.text) {
+        inlineStats.empty++
+        if (spelling) slog('ai', 'inline_spell', { partial, answer: '', note: 'model returned nothing', ms })
+        return { items: [] }
+      }
+      const { insertText, replacePartial } = spelling ? resolvePartialWord(res.text, partial) : { insertText: res.text, replacePartial: false }
+      if (replacePartial) {
+        // A genuine misspelling: queue the correction for the suggestion popup (see pendingSpell).
+        const word = insertText.match(/^[A-Za-z']+/)?.[0] ?? ''
+        if (word && word.toLowerCase() !== partial.toLowerCase()) {
+          pendingSpell = {
+            uri: model.uri.toString(),
+            line: position.lineNumber,
+            startCol: position.column - partial.length,
+            endCol: position.column,
+            typed: partial,
+            fix: matchCase(word, partial)
+          }
+          inlineStats.shown++
+          slog('ai', 'inline_spell', { partial, fix: pendingSpell.fix, ms, via: 'suggest-popup' })
+          editor.trigger('prep', 'editor.action.triggerSuggest', {})
+        } else {
+          inlineStats.empty++
+        }
+        return { items: [] }
+      }
+      if (spelling) slog('ai', 'inline_spell', { partial, answer: res.text.slice(0, 80), insertText: insertText.slice(0, 80), replacePartial, ms, via: 'ghost' })
+      if (!insertText) {
+        inlineStats.empty++
+        return { items: [] }
+      }
+      inlineStats.shown++
+      inlineStats.chars += insertText.length
       return {
         items: [
           {
-            insertText: res.text,
+            insertText,
             range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column)
           }
         ]
@@ -101,7 +206,35 @@ function registerInlineCompletions(monaco: Monaco): IDisposable[] {
     },
     freeInlineCompletions: () => {}
   }
-  return Object.values(MONACO_LANGUAGE).map((lang) => monaco.languages.registerInlineCompletionsProvider(lang, provider))
+  // The suggestion-popup half of spelling help: offers exactly one item, the queued correction, and only while the
+  // caret still sits at the end of the misspelled word.
+  const spellProvider = {
+    provideCompletionItems: (model: MonacoEditor.ITextModel, position: import('monaco-editor').Position) => {
+      const p = pendingSpell
+      if (!p || p.uri !== model.uri.toString() || p.line !== position.lineNumber || p.endCol !== position.column) return { suggestions: [] }
+      const range = new monaco.Range(p.line, p.startCol, p.line, p.endCol)
+      if (model.getValueInRange(range) !== p.typed) return { suggestions: [] }
+      return {
+        suggestions: [
+          {
+            label: p.fix,
+            kind: monaco.languages.CompletionItemKind.Text,
+            insertText: p.fix,
+            filterText: p.typed,
+            sortText: '!',
+            preselect: true,
+            detail: `Spelling: “${p.typed}” → “${p.fix}” (Tab)`,
+            range
+          }
+        ]
+      }
+    }
+  }
+  const langs = Object.values(MONACO_LANGUAGE)
+  return [
+    ...langs.map((lang) => monaco.languages.registerInlineCompletionsProvider(lang, provider)),
+    ...langs.map((lang) => monaco.languages.registerCompletionItemProvider(lang, spellProvider))
+  ]
 }
 
 export function EditorColumn() {
@@ -113,6 +246,10 @@ export function EditorColumn() {
   const running = useAppStore((s) => s.running)
   const runOrSubmit = useAppStore((s) => s.runOrSubmit)
   const inlineOn = useAppStore((s) => s.settings.inlineCompletions)
+  const inlineScope = useAppStore((s) => s.settings.inlineScope)
+  const ghostOpacity = useAppStore((s) => s.settings.ghostOpacity)
+  const ghostColor = useAppStore((s) => s.settings.ghostColor)
+  const ghostItalic = useAppStore((s) => s.settings.ghostItalic)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const setEditorState = useAppStore((s) => s.setEditorState)
 
@@ -138,13 +275,28 @@ export function EditorColumn() {
       timer.current = setTimeout(pushState, 120)
     })
     pushState()
-    const inline = registerInlineCompletions(monaco)
+    const inline = registerInlineCompletions(monaco, editor)
+    // Alt+\ asks for a suggestion right now (the only way to get one in "manual" trigger mode).
+    const manual = editor.addAction({
+      id: 'prep.ghost.trigger',
+      label: 'Ghost text: suggest now',
+      keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.Backslash],
+      run: (ed) => {
+        ed.trigger('prep', 'editor.action.inlineSuggest.trigger', null)
+      }
+    })
     return () => {
       cursorSub.dispose()
+      manual.dispose()
       inline.forEach((d) => d.dispose())
       attachEditor(null)
     }
   }, [instance, setEditorState])
+
+  // Colour / opacity / italic follow the settings live.
+  useEffect(() => {
+    if (instance) applyGhostStyle(instance.monaco, { ghostOpacity, ghostColor, ghostItalic })
+  }, [instance, ghostOpacity, ghostColor, ghostItalic])
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-[#0a0c11]">
@@ -165,6 +317,20 @@ export function EditorColumn() {
         >
           <Sparkles size={12} /> Ghost text {inlineOn ? 'on' : 'off'}
         </button>
+        <select
+          data-testid="ghost-scope"
+          value={inlineScope}
+          disabled={!inlineOn}
+          onChange={(e) => updateSettings({ inlineScope: e.target.value as InlineScope })}
+          title={INLINE_SCOPES.find((x) => x.id === inlineScope)?.hint}
+          className="mr-1.5 rounded-md border border-white/[0.08] bg-[#12151c] px-2 py-1 text-[11.5px] text-zinc-400 outline-none disabled:opacity-40"
+        >
+          {INLINE_SCOPES.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.label}
+            </option>
+          ))}
+        </select>
         <select
           value={language}
           onChange={(e) => setLanguage(e.target.value)}
@@ -188,7 +354,8 @@ export function EditorColumn() {
         <div className="min-h-0 flex-1">
           <Editor
             height="100%"
-            theme="vs-dark"
+            theme={EDITOR_THEME}
+            beforeMount={(monaco) => applyGhostStyle(monaco, useAppStore.getState().settings)}
             language={MONACO_LANGUAGE[language] ?? 'plaintext'}
             value={code}
             onChange={(value) => setCode(value ?? '')}

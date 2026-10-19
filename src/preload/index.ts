@@ -8,6 +8,8 @@ import type {
   ChipResponse,
   InlineCompleteRequest,
   InlineCompleteResponse,
+  LogEventInput,
+  SessionInfo,
   Playground,
   ProviderStatus,
   RunRequest,
@@ -67,7 +69,10 @@ const api = {
   },
   debug: {
     openDevtools: (): Promise<void> => ipcRenderer.invoke(IPC.debugOpenDevtools),
-    getLogPath: (): Promise<string> => ipcRenderer.invoke(IPC.debugGetLogPath)
+    getLogPath: (): Promise<string> => ipcRenderer.invoke(IPC.debugGetLogPath),
+    openLogsDir: (): Promise<string> => ipcRenderer.invoke(IPC.debugOpenLogsDir),
+    sessionInfo: (): Promise<SessionInfo> => ipcRenderer.invoke(IPC.debugSessionInfo),
+    logEvents: (events: LogEventInput[]): void => ipcRenderer.send(IPC.logEvents, events)
   }
 }
 

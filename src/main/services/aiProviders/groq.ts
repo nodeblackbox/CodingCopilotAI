@@ -6,6 +6,8 @@ const API_URL = 'https://api.groq.com/openai/v1/chat/completions'
 // Verified against GET /openai/v1/models on 2026-09-10; older llama-3.x ids have been retired.
 const MODEL = 'openai/gpt-oss-120b'
 
+let lastRateLimitLog = 0
+
 /** Read at call time, not module-eval time: ES imports are hoisted above dotenv.config(). */
 const getApiKey = (): string => process.env.GROQ_API_KEY?.trim() ?? ''
 
@@ -34,7 +36,15 @@ async function post(req: CompletionRequest, stream: boolean): Promise<Response> 
   })
   if (!res.ok) {
     const err = await httpError(res, 'Groq')
-    logger.error('groq', err.message)
+    if (res.status === 429) {
+      // Free tier: 8,000 tokens/min for this model. Expected under heavy typing; don't flood the logs with it.
+      if (Date.now() - lastRateLimitLog > 30_000) {
+        lastRateLimitLog = Date.now()
+        logger.warn('groq', 'Rate limited (free tier tokens-per-minute) — ghost text will skip until the window clears', err.message.slice(0, 200))
+      }
+    } else {
+      logger.error('groq', err.message)
+    }
     throw err
   }
   return res

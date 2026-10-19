@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot, Mic, MicOff, Send, Loader2, Square, Volume2 } from 'lucide-react'
+import { Bot, Mic, MicOff, Send, Loader2, Square, Volume2, Headphones, HeadphoneOff } from 'lucide-react'
 import { Textarea } from '@renderer/components/ui/Textarea'
 import { Tag } from '@renderer/components/ui/Tag'
 import { CHIP_DEFS } from '@renderer/data/chips'
 import { useAppStore } from '@renderer/state/store'
+import { HELP_STYLES } from '@shared/types'
+import type { ChatMessage } from '@shared/types'
 
 const ENGINE_LABEL: Record<string, string> = { edge: 'Ava (Edge)', kokoro: 'Kokoro', webspeech: 'OS voice' }
 const ENGINE_ORDER = ['edge', 'kokoro'] as const
@@ -102,8 +104,17 @@ export function CopilotPanel({ width }: { width: number }) {
               </button>
             ))}
           </div>
-          <Pill on={settings.guidedVoice} onClick={() => updateSettings({ guidedVoice: !settings.guidedVoice })} title="One step at a time instead of full answers">
-            Guided
+          <Pill
+            on={settings.autoApplyEdits}
+            onClick={() => updateSettings({ autoApplyEdits: !settings.autoApplyEdits })}
+            title={
+              settings.autoApplyEdits
+                ? 'Edits you ask for go straight into the editor (Undo / Ctrl+Z to revert). Click to review rewrites as a diff first.'
+                : 'Whole-file rewrites wait in a diff for Accept / Reject. Click to apply them straight away.'
+            }
+            testId="pill-auto-apply"
+          >
+            Auto-apply
           </Pill>
           <Pill on={settings.inlineCompletions} onClick={() => updateSettings({ inlineCompletions: !settings.inlineCompletions })} title="Grey inline code suggestions in the editor (Tab accepts)" testId="pill-ghost">
             Ghost text
@@ -115,6 +126,24 @@ export function CopilotPanel({ width }: { width: number }) {
           >
             🔊 {ENGINE_LABEL[settings.ttsEngine] ?? settings.ttsEngine}
           </Pill>
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-[10.5px] uppercase tracking-wide text-zinc-600">Help</span>
+          <div className="inline-flex rounded-lg border border-white/[0.08] p-0.5" data-testid="help-style">
+            {HELP_STYLES.map((h) => (
+              <button
+                key={h.id}
+                data-testid={`help-style-${h.id}`}
+                title={h.hint}
+                onClick={() => updateSettings({ helpStyle: h.id, guidedVoice: h.id === 'guided' })}
+                className={`rounded-md px-2 py-0.5 text-[11.5px] transition-colors ${
+                  settings.helpStyle === h.id ? 'bg-teal-400/20 text-teal-200' : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                {h.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -175,16 +204,44 @@ function AgentMode() {
   )
 }
 
+/** A reply the user talked over shows what they heard, then the unheard rest dimmed. */
+function MessageText({ m }: { m: ChatMessage }) {
+  if (m.role !== 'assistant' || m.heard === undefined) return <>{m.text}</>
+  // `heard` is the spoken (markdown-free) text, so find where its last words sit in the displayed text.
+  const tail = m.heard.replace(/…$/, '').trim().split(/\s+/).slice(-3).join(' ')
+  const at = tail ? m.text.indexOf(tail) : -1
+  const cut = at >= 0 ? at + tail.length : Math.min(m.text.length, m.heard.length)
+  return (
+    <>
+      <span>{m.text.slice(0, cut)}</span>
+      <span className="mx-1 text-[10.5px] text-rose-300/80" title="You cut in here — the copilot knows you didn't hear the rest">
+        ✂ cut off
+      </span>
+      <span className="text-zinc-500">{m.text.slice(cut)}</span>
+    </>
+  )
+}
+
 function AskMode() {
   const settings = useAppStore((s) => s.settings)
-  const updateSettings = useAppStore((s) => s.updateSettings)
   const messages = useAppStore((s) => s.messages)
   const chatSending = useAppStore((s) => s.chatSending)
   const sendMessage = useAppStore((s) => s.sendMessage)
   const cancelReply = useAppStore((s) => s.cancelReply)
   const voice = useAppStore((s) => s.voice)
   const toggleMic = useAppStore((s) => s.toggleMic)
+  const toggleMute = useAppStore((s) => s.toggleMute)
+  const toggleDeafen = useAppStore((s) => s.toggleDeafen)
   const stopSpeaking = useAppStore((s) => s.stopSpeaking)
+
+  const notes = useAppStore((s) => s.notes)
+  const removeNote = useAppStore((s) => s.removeNote)
+  const solutionUnlocked = useAppStore((s) => s.solutionUnlocked)
+  const lastAiEdit = useAppStore((s) => s.lastAiEdit)
+  // Only while the file is untouched since that edit: undoing after you kept typing would eat your work.
+  const canUndo = useAppStore((s) => s.lastAiEdit !== null && s.lastAiEdit.after === s.code)
+  const undoAiEdit = useAppStore((s) => s.undoAiEdit)
+  const styleInfo = HELP_STYLES.find((h) => h.id === settings.helpStyle)
 
   const [input, setInput] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -211,11 +268,26 @@ function AskMode() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden p-3.5">
-      {settings.guidedVoice && (
-        <Tag className="mb-2 self-start bg-teal-400/10 text-teal-300 ring-1 ring-teal-400/25">
-          Guided mode — I&apos;ll walk you through it step by step
-        </Tag>
-      )}
+      <div className={`flex flex-wrap items-center gap-1.5 ${notes.length || solutionUnlocked ? 'mb-2' : ''}`}>
+        {solutionUnlocked && (settings.helpStyle === 'coach' || settings.helpStyle === 'guided') && (
+          <Tag className="bg-amber-400/10 text-amber-200 ring-1 ring-amber-400/25" title={`You asked for the answer, so ${styleInfo?.label} mode may show the solution now. Resets on the next problem.`}>
+            Answer unlocked
+          </Tag>
+        )}
+        {notes.map((n, i) => (
+          <span
+            key={`${i}-${n}`}
+            data-testid="session-note"
+            title="Session note — the copilot follows this for the rest of the problem. Click × to forget it."
+            className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/[0.08] px-1.5 py-0.5 text-[10.5px] text-zinc-400"
+          >
+            <span className="truncate">📌 {n}</span>
+            <button onClick={() => removeNote(i)} className="text-zinc-600 hover:text-zinc-200" aria-label="Forget this note">
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
       <div ref={scrollRef} className="flex-1 space-y-2.5 overflow-y-auto">
         {messages.map((m, i) => {
           const streaming = chatSending && i === messages.length - 1 && m.role === 'assistant'
@@ -226,7 +298,7 @@ function AskMode() {
                   m.role === 'user' ? 'bg-teal-400/15 text-teal-100' : 'bg-white/[0.05] text-zinc-200'
                 }`}
               >
-                {m.text}
+                <MessageText m={m} />
                 {streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-teal-400/70 align-middle" />}
               </div>
             </div>
@@ -258,16 +330,16 @@ function AskMode() {
           >
             {voice.connecting ? <Loader2 size={13} className="animate-spin" /> : voice.micOn ? <Mic size={13} /> : <MicOff size={13} />}
           </button>
-          <button
-            onClick={() => updateSettings({ guidedVoice: !settings.guidedVoice })}
-            className={`rounded-lg border px-2.5 py-1.5 text-[12px] ${
-              settings.guidedVoice
-                ? 'border-teal-400/40 bg-teal-400/10 text-teal-300'
-                : 'border-white/[0.08] text-zinc-400 hover:bg-white/5'
-            }`}
-          >
-            Guided voice
-          </button>
+          {canUndo && lastAiEdit && (
+            <button
+              data-testid="undo-ai-edit"
+              onClick={undoAiEdit}
+              title={`Put the file back the way it was before the copilot's last ${lastAiEdit.label}`}
+              className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[11.5px] text-amber-200 hover:bg-amber-400/20"
+            >
+              Undo AI edit
+            </button>
+          )}
           <span className="flex-1 truncate text-[11px] text-zinc-500">{micLabel}</span>
           {voice.micOn && (
             <span className="flex h-3 w-14 flex-none items-end gap-px" title="Mic level">
@@ -291,18 +363,34 @@ function AskMode() {
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2" title="Assistant voice volume">
-          <Volume2 size={12} className="text-zinc-500" />
-          <input
-            data-testid="volume-slider"
-            type="range"
-            min={0}
-            max={100}
-            value={Math.round(settings.voiceVolume * 100)}
-            onChange={(e) => updateSettings({ voiceVolume: Number(e.target.value) / 100 })}
-            className="h-1 flex-1 cursor-pointer accent-teal-400"
-          />
-          <span className="w-8 text-right font-mono text-[10.5px] text-zinc-500">{Math.round(settings.voiceVolume * 100)}%</span>
+        <div className="flex items-center gap-2">
+          <button
+            data-testid="mute-toggle"
+            onClick={toggleMute}
+            disabled={voice.deafened}
+            title={voice.deafened ? 'Undeafen to change mute' : voice.micMuted ? 'Unmute your microphone' : 'Mute your microphone'}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              voice.micMuted
+                ? 'border-rose-400/50 bg-rose-500/15 text-rose-200'
+                : 'border-white/[0.08] text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
+            }`}
+          >
+            {voice.micMuted ? <MicOff size={12} /> : <Mic size={12} />}
+            {voice.micMuted ? 'Muted' : 'Mute'}
+          </button>
+          <button
+            data-testid="deafen-toggle"
+            onClick={toggleDeafen}
+            title={voice.deafened ? 'Undeafen' : 'Deafen — mutes your mic and stops the assistant\'s voice'}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
+              voice.deafened
+                ? 'border-sky-400/50 bg-sky-500/15 text-sky-300'
+                : 'border-white/[0.08] text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
+            }`}
+          >
+            {voice.deafened ? <HeadphoneOff size={12} /> : <Headphones size={12} />}
+            {voice.deafened ? 'Deafened' : 'Deafen'}
+          </button>
         </div>
         {voice.lastError && <div className="text-[11px] text-rose-300">{voice.lastError}</div>}
         <Textarea

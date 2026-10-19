@@ -2,7 +2,9 @@ import { app } from 'electron'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Playground, Settings } from '@shared/types'
+import { INLINE_DEFAULTS } from '@shared/inline'
 import { logger } from '@main/logger'
+import { sessionLog } from '@main/services/sessionLog'
 
 const DEFAULT_SETTINGS: Settings = {
   provider: 'anthropic',
@@ -12,6 +14,9 @@ const DEFAULT_SETTINGS: Settings = {
   language: 'python',
   guidedVoice: false,
   inlineCompletions: true,
+  ...INLINE_DEFAULTS,
+  helpStyle: 'coach',
+  autoApplyEdits: true,
   ttsEngine: 'edge',
   voiceName: 'en-US-AvaNeural',
   voiceVolume: 0.9,
@@ -46,14 +51,37 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
 }
 
 export async function getSettings(): Promise<Settings> {
-  return readJson(settingsFile(), DEFAULT_SETTINGS)
+  const s = await readJson(settingsFile(), DEFAULT_SETTINGS)
+  // Older files only had the guidedVoice switch; keep their choice. guidedVoice stays in sync for old readers.
+  if (s.guidedVoice && s.helpStyle === DEFAULT_SETTINGS.helpStyle) {
+    try {
+      const raw = JSON.parse(await readFile(settingsFile(), 'utf8')) as object
+      if (!('helpStyle' in raw)) s.helpStyle = 'guided'
+    } catch {
+      /* unreadable file: defaults already applied */
+    }
+  }
+  return s
 }
 
-export async function setSettings(next: Settings): Promise<Settings> {
-  await mkdir(dataDir(), { recursive: true })
-  await writeFile(settingsFile(), JSON.stringify(next, null, 2), 'utf8')
-  logger.info('store', 'Settings saved')
-  return next
+/** Writes are serialised so two quick saves can't interleave on the same file. */
+let settingsWrite: Promise<unknown> = Promise.resolve()
+
+export function setSettings(next: Settings): Promise<Settings> {
+  const run = async (): Promise<Settings> => {
+    const prev = await getSettings()
+    const changed = (Object.keys(next) as Array<keyof Settings>).filter(
+      (k) => JSON.stringify(prev[k]) !== JSON.stringify(next[k])
+    )
+    if (!changed.length) return next // nothing to write, nothing to log
+    await mkdir(dataDir(), { recursive: true })
+    await writeFile(settingsFile(), JSON.stringify(next, null, 2), 'utf8')
+    sessionLog('settings', 'changed', Object.fromEntries(changed.map((k) => [k, { from: prev[k], to: next[k] }])))
+    return next
+  }
+  const result = settingsWrite.then(run, run)
+  settingsWrite = result.catch(() => undefined)
+  return result
 }
 
 export async function listPlaygrounds(): Promise<Playground[]> {

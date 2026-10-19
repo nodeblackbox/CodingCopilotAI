@@ -8,6 +8,8 @@ import { registerStorageIpc } from './ipc/storage'
 import { registerDebugIpc } from './ipc/debug'
 import { registerVoiceIpc } from './ipc/voice'
 import { stopVoiceSidecar } from './services/voiceSidecar'
+import { flushSessionLog, initSessionLog, sessionLog, sessionsDir } from './services/sessionLog'
+import { getSettings } from './services/store'
 
 const isDev = !app.isPackaged
 
@@ -48,6 +50,8 @@ function createWindow(): BrowserWindow {
   win.webContents.on('did-fail-load', (_e, code, description) => {
     logger.error('window', `Failed to load renderer: ${description} (${code})`)
   })
+  win.on('unresponsive', () => logger.warn('window', 'Window became unresponsive'))
+  win.on('responsive', () => logger.info('window', 'Window responsive again'))
 
   return win
 }
@@ -72,6 +76,10 @@ function buildDebugMenu(): void {
       label: 'Debug',
       submenu: [
         {
+          label: 'Open logs folder (sessions + conversations)',
+          click: () => shell.openPath(join(sessionsDir(), '..'))
+        },
+        {
           label: 'Open log file location',
           click: () => shell.showItemInFolder(logger.getLogPath())
         },
@@ -85,8 +93,19 @@ function buildDebugMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-app.whenReady().then(() => {
-  logger.info('app', `Starting prep-copilot, dev=${isDev}, log=${logger.getLogPath()}`)
+app.whenReady().then(async () => {
+  const sessionFile = initSessionLog({ dev: isDev, settings: await getSettings().catch(() => null) })
+  logger.info('app', `Starting prep-copilot, dev=${isDev}, log=${logger.getLogPath()}, session=${sessionFile}`)
+
+  app.on('render-process-gone', (_e, wc, details) => {
+    logger.error('crash', `Renderer process gone: ${details.reason}`, { url: wc.getURL(), exitCode: details.exitCode })
+  })
+  app.on('child-process-gone', (_e, details) => {
+    logger.error('crash', `Child process gone: ${details.type} (${details.reason})`, {
+      name: details.name,
+      exitCode: details.exitCode
+    })
+  })
 
   // Restrictive CSP for the renderer. Monaco assets are bundled, not CDN-loaded. The only network the
   // renderer may touch is the local Python voice sidecar (WebSocket on 127.0.0.1) — AI keys stay in main.
@@ -121,12 +140,20 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => stopVoiceSidecar())
+app.on('before-quit', () => {
+  sessionLog('app', 'quit')
+  stopVoiceSidecar()
+  flushSessionLog()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
 process.on('uncaughtException', (err) => {
-  logger.error('process', 'Uncaught exception', String(err?.stack ?? err))
+  logger.error('process', 'Uncaught exception', err)
+})
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('process', 'Unhandled promise rejection', reason)
 })

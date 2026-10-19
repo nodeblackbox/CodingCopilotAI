@@ -67,6 +67,49 @@ export function insertAtCursor(text: string): number | null {
   return pos.lineNumber
 }
 
+/**
+ * Replace whole lines a..b (inclusive, clamped) with `text`; empty text deletes them. One undo step.
+ * Returns the range that was replaced, or null when no editor is mounted.
+ */
+export function replaceLines(a: number, b: number, text: string): SelectionRange | null {
+  if (!current) return null
+  const model = current.getModel()
+  if (!model) return null
+  const max = model.getLineCount()
+  const start = Math.max(1, Math.min(max, Math.min(a, b)))
+  const end = Math.max(1, Math.min(max, Math.max(a, b)))
+  const body = text.replace(/\s+$/, '')
+  let range
+  if (body) {
+    range = { startLineNumber: start, startColumn: 1, endLineNumber: end, endColumn: model.getLineMaxColumn(end) }
+  } else if (end < max) {
+    // delete the lines including their line break
+    range = { startLineNumber: start, startColumn: 1, endLineNumber: end + 1, endColumn: 1 }
+  } else if (start > 1) {
+    range = { startLineNumber: start - 1, startColumn: model.getLineMaxColumn(start - 1), endLineNumber: end, endColumn: model.getLineMaxColumn(end) }
+  } else {
+    range = { startLineNumber: 1, startColumn: 1, endLineNumber: end, endColumn: model.getLineMaxColumn(end) }
+  }
+  current.pushUndoStop()
+  current.executeEdits('copilot', [{ range, text: body, forceMoveMarkers: true }])
+  current.pushUndoStop()
+  const landed = Math.min(start, model.getLineCount())
+  current.setPosition({ lineNumber: landed, column: model.getLineMaxColumn(landed) })
+  current.revealLineInCenter(landed)
+  return { startLine: start, endLine: end }
+}
+
+/** Swap the whole buffer as one undoable edit (Ctrl+Z brings the old file back). */
+export function replaceAll(text: string): boolean {
+  if (!current) return false
+  const model = current.getModel()
+  if (!model) return false
+  current.pushUndoStop()
+  current.executeEdits('copilot', [{ range: model.getFullModelRange(), text, forceMoveMarkers: true }])
+  current.pushUndoStop()
+  return true
+}
+
 export function revealLine(line: number): void {
   current?.revealLineInCenter(line)
 }

@@ -1,5 +1,6 @@
-import type { AskRequest, ChipRequest, InlineCompleteRequest } from '@shared/types'
-import { EDITOR_CMD } from '@shared/types'
+import type { AskRequest, ChipRequest, HelpStyle, InlineCompleteRequest, InlineScope, Settings } from '@shared/types'
+import { BLOCK_MAX_LINES, PHRASE_MAX_WORDS, inlineContextKind } from '@shared/inline'
+import { EDITOR_CMD, SILENT_REPLY } from '@shared/types'
 
 const CHIP_INSTRUCTIONS: Record<ChipRequest['chipId'], string> = {
   explain:
@@ -90,80 +91,146 @@ function renderEditor(req: AskRequest): string[] {
   return out
 }
 
+const STYLE_RULES: Record<HelpStyle, string[]> = {
+  coach: [
+    'HELP STYLE: COACH — the most important rule in this prompt. You are a coach, not a solver.',
+    '- NEVER write or describe the solution logic (the algorithm, the loop that solves it, the key condition, the data-structure',
+    '  trick) unless they explicitly ask for the answer ("I give up", "show me the solution"). Explaining a concept they ask about',
+    '  (what a hash map is, why a lookup is O(1)) is fine — applying it to finish their problem for them is not.',
+    '- When they ask you to type something, type EXACTLY that and nothing more: "call the function" means a call line, not a',
+    '  rewritten function; "add a print" means one print line; "fix the indentation" means re-indent those lines, not new logic.',
+    '- Vague requests get the smallest literal thing: "give me something to return" → a placeholder like `return []`, NOT the',
+    '  algorithm. "Help me" → one hint. When unsure what they want, ask one short question instead of writing code.'
+  ],
+  guided: [
+    'HELP STYLE: GUIDED. Give exactly ONE next step (one sentence: "add a for loop over nums"), then stop and wait until they say',
+    'they did it. Never reveal later steps or the whole solution unless they explicitly ask for the answer. If they ask you to type',
+    'the step, insert just that one step.'
+  ],
+  pair: [
+    'HELP STYLE: PAIR PROGRAMMER. Do what they ask, fully, including writing the code they request. Still never volunteer the',
+    'solution or rewrite their approach when they did not ask; follow their lead.'
+  ],
+  listen: [
+    'HELP STYLE: LISTEN (background). They are working and thinking out loud; you are in the background.',
+    `- Reply ONLY when they ask you a direct question or give you a command. For anything else output exactly ${SILENT_REPLY}`,
+    '- When you do reply, keep it to one short sentence. Never offer hints or next steps on your own.'
+  ]
+}
+
 export function buildAskSystemPrompt(req: AskRequest): string {
   const scratch = req.mode === 'scratch'
+  const style: HelpStyle = req.helpStyle ?? (req.guidedVoice ? 'guided' : 'coach')
   const base = [
     scratch
       ? "You are a coding copilot living inside the user's IDE. There is NO assigned problem: this is a free coding session, so help with whatever is in the editor and whatever they say they're working on. Be direct and concise."
-      : "You are an interview-prep coding copilot living inside the candidate's IDE. They already know how to code and want to speedrun interview patterns. Be direct and concise.",
-    'You can SEE their editor, cursor and selection below, and you can TYPE into it and move around it (see "Editing the file").',
+      : "You are an interview-prep coding copilot living inside the candidate's IDE, like a friend sitting next to them while they practise. Be direct and concise.",
+    'You can SEE their editor, cursor and selection below, and you can EDIT it, move around it, press Run, and remember notes (see "Your tools").',
+    'You cannot browse the web or search. You can see the latest Run output (below) but only after Run was pressed.',
     scratch ? `What the user says they're working on: ${req.questionPrompt.trim() || '(nothing stated yet — ask if it matters)'}` : `Current problem: "${req.questionTitle}"`,
     scratch ? '' : req.questionPrompt,
     `Language: ${req.language}`,
     ...renderEditor(req),
+    ...renderRun(req),
+    ...renderNotes(req),
     '',
-    'Editing the file',
-    `- When the candidate asks you to write, type, insert, add, or print something into the editor, put the exact code in a block:`,
-    `  ${EDITOR_CMD.insert}`,
-    '  <code to insert at the cursor, already indented for that spot; end with a newline when it is a whole line>',
+    'Your tools (blocks are stripped from what they see/hear and applied to the editor)',
+    `- Change specific lines (the right tool for almost every edit): ${EDITOR_CMD.lines}7-9`,
+    '  <the new text for lines 7–9, with correct indentation; any number of lines>',
     `  ${EDITOR_CMD.end}`,
-    `- To rewrite the whole file (they will see a diff and accept or reject), use ${EDITOR_CMD.replace} … ${EDITOR_CMD.end} with the full file.`,
-    `- To move their caret: ${EDITOR_CMD.goto}12${EDITOR_CMD.end}. To highlight lines for them (e.g. "look at the inner loop"): ${EDITOR_CMD.select}4-6${EDITOR_CMD.end}.`,
-    '  Highlighted lines become the selection for the next turn, so this is how you point at code.',
-    '- At most one INSERT/REPLACE block per reply (GOTO/SELECT may accompany it). Outside the blocks, say in one short sentence what you did. Never read code aloud.',
-    '- Only do this when asked (or when they clearly want the code typed). Otherwise coach in words.',
-    '- If their code is wrong, say so plainly and point at the line number.'
+    `  One line: ${EDITOR_CMD.lines}8 … ${EDITOR_CMD.end}. Delete lines: give the range and nothing after it (${EDITOR_CMD.lines}7-10${EDITOR_CMD.end}).`,
+    '  Line numbers are the ones in the listing above. To add lines AFTER line N without touching it, use LINES N and repeat line N first.',
+    '  Every line of the body, INCLUDING THE FIRST, carries its full indentation exactly as it should appear in the file.',
+    `- Insert at the cursor: ${EDITOR_CMD.insert}`,
+    '  <code, already indented for that spot; end with a newline when it is a whole line>',
+    `  ${EDITOR_CMD.end}`,
+    `- Rewrite the WHOLE file: ${EDITOR_CMD.replace} <the complete new file> ${EDITOR_CMD.end}. Only for "rewrite it", "start over",`,
+    '  "remove everything" (then the body is the new, possibly empty, file). NEVER use REPLACE for a small change: it replaces',
+    '  the entire file with exactly what you write, so anything you leave out is deleted.',
+    `- Move the caret: ${EDITOR_CMD.goto}12${EDITOR_CMD.end}. Highlight lines to point at them: ${EDITOR_CMD.select}4-6${EDITOR_CMD.end}.`,
+    `- Press Run: ${EDITOR_CMD.run}${EDITOR_CMD.end} (the output reaches you with their next message).`,
+    `- Remember something for the rest of the session: ${EDITOR_CMD.note}doing brute force first; wants no spoilers${EDITOR_CMD.end}`,
+    '  Use it when they state a lasting preference or decision (approach they chose, how they want help, what they find hard).',
+    '- At most one LINES/INSERT/REPLACE block per reply. Outside the blocks, say in one short sentence what you did. Never read code aloud.',
+    '',
+    'How to behave',
+    '- When they tell you to change the editor ("remove lines 7 to 10", "fix it", "do it", "clear everything"), DO it with a block.',
+    '  Never answer "hit delete" or "you can do that" — highlighting is not doing.',
+    '- Edit ONLY when they ask you to change something. A question ("why doesn\'t it run?", "what\'s wrong?", "what does this do?")',
+    '  gets an answer in words, optionally with SELECT to point at the line — never an edit. Let them fix it, or offer to.',
+    '- Do the smallest edit that does what they asked. Don\'t touch other lines, and don\'t add logic they didn\'t ask for.',
+    '- Follow the approach THEY chose. If they are doing brute force, help with brute force; mention a better approach only if they',
+    '  ask, or once at the very end when their version works.',
+    '- Before you mention a line number or what a line contains, check it against the listing. Never guess.',
+    '- If their code is wrong, say so plainly and point at the line number.',
+    '- They often think out loud, half-sentences and filler included. If a message needs no answer, keep yours to a few words,',
+    `  or output exactly ${SILENT_REPLY} (plain text, not a block). Don't end replies with "Ready to…?" or "What's next?" — wait for them.`,
+    '- If they tell you to stop or be quiet, acknowledge in two words at most and stay quiet until they address you.',
+    '- An assistant message that ends with "[cut off — …]" was interrupted: they only heard the part before it. Don\'t assume',
+    '  they heard the rest; repeat what matters briefly if it is still relevant.'
   ]
 
   if (req.spoken) {
     base.push(
       '',
-      'VOICE MODE: your reply (outside any code block) is read aloud by text-to-speech and the candidate is talking to you.',
-      'Answer in 1-3 short spoken sentences. No markdown, no bullet lists, no symbols that sound wrong when read out',
-      '(say "big O of n", not "O(n)"). Code goes only inside an INSERT/REPLACE block, never in the spoken text.'
+      'VOICE MODE: your reply (outside any block) is read aloud by text-to-speech and they are talking to you.',
+      'Answer in 1-2 short spoken sentences. No markdown, no bullet lists, no symbols that sound wrong when read out',
+      '(say "big O of n", not "O(n)"). Code goes only inside a block, never in the spoken text.'
     )
+  } else if (style === 'pair') {
+    base.push('', 'You may include short code snippets in markdown when they genuinely help explain; use a block when they want it in the editor.')
   }
 
-  if (req.guidedVoice) {
-    base.push(
-      '',
-      'GUIDED MODE IS ON: never dump the full solution.',
-      'Give exactly ONE next instruction (a single step: "add a for loop over...", "now check if the complement is in the map").',
-      'Keep it to 1-2 sentences, then stop and wait for the candidate to say they have done it before giving the next step.',
-      'If they ask you to type the step for them, insert just that one step with an INSERT block.'
-    )
-  } else if (!req.spoken) {
-    base.push('', 'You may include short code snippets in markdown when they genuinely help explain; use INSERT/REPLACE when they want it in the editor.')
-  }
+  // Last, so it weighs most: how much help they want.
+  base.push(
+    '',
+    ...(req.solutionUnlocked && style !== 'pair' && style !== 'listen'
+      ? [
+          `HELP STYLE: ${style.toUpperCase()}, but they have explicitly asked for the answer this session ("I give up"), so you may`,
+          'now explain or write the full solution when they want it. Still type only what they ask for.'
+        ]
+      : STYLE_RULES[style])
+  )
 
   return base.join('\n')
 }
 
-/**
- * Is the caret inside a comment or docstring? Then the completion should be prose, not code.
- * Cheap heuristics over the text before the cursor; good enough for #, //, /* … *\/ and Python triple quotes.
- */
-export function inlineContextKind(prefix: string, language: string): 'comment' | 'code' {
-  const line = prefix.slice(prefix.lastIndexOf('\n') + 1)
-  const t = line.trimStart()
-  if (/^(#|\/\/|\*|\/\*|--|<!--)/.test(t)) return 'comment'
-  // trailing comment on a code line: `x = 1  # because`
-  if (language === 'python' && /(^|\s)#[^'"]*$/.test(line)) return 'comment'
-  if (language !== 'python' && /(^|\s)\/\/[^'"]*$/.test(line)) return 'comment'
-  // inside an unclosed block comment or docstring
-  const lastOpen = prefix.lastIndexOf('/*')
-  if (lastOpen >= 0 && prefix.indexOf('*/', lastOpen) < 0) return 'comment'
-  if (language === 'python') {
-    const triple = (prefix.match(/"""|'''/g) ?? []).length
-    if (triple % 2 === 1) return 'comment'
-  }
-  return 'code'
+function renderRun(req: AskRequest): string[] {
+  if (!req.lastRun?.trim()) return ['No Run output yet this session.']
+  return ['Latest Run output (from the code as it was when Run was pressed; the file may have changed since):', '```', req.lastRun, '```']
 }
 
+function renderNotes(req: AskRequest): string[] {
+  if (!req.notes?.length) return []
+  return ['Session notes (standing instructions and decisions — always follow them):', ...req.notes.map((n) => `- ${n}`)]
+}
+
+// Comment detection lives in shared/inline.ts so the renderer can use it too (to skip comments or code entirely).
+export { inlineContextKind }
+
+const SCOPE_RULES: Record<InlineScope, (maxLines: number) => string> = {
+  word: () =>
+    'LENGTH: output ONE word only. If the cursor is inside a half-typed word, output ONLY the letters that finish it (never repeat the letters already typed); if the cursor is after a space, output the single most likely next word. Never output more than one word.',
+  phrase: () => `LENGTH: output a short phrase of at most ${PHRASE_MAX_WORDS} words, on the current line only. No line breaks.`,
+  line: () =>
+    'LENGTH: finish the CURRENT line only. If the current line is already complete, output the single next line. Never output more than one line.',
+  lines: (n) =>
+    `LENGTH: finish the current line, then add more lines only if they are clearly the next step — at most ${n} lines in total. Preserve the indentation style.`,
+  block: () =>
+    `LENGTH: write the whole logical block that naturally follows (a loop body, an if/else, a short function) — at most ${BLOCK_MAX_LINES} lines. Preserve the indentation style.`
+}
+
+export type InlineSettings = Pick<
+  Settings,
+  'inlineScope' | 'inlineMaxLines' | 'inlineSpellAssist' | 'inlineChatContext'
+>
+
 /** Ghost-text completion at the cursor. The model must return only the text to insert. */
-export function buildInlinePrompt(req: InlineCompleteRequest): { system: string; user: string } {
+export function buildInlinePrompt(req: InlineCompleteRequest, s: InlineSettings): { system: string; user: string } {
   const kind = inlineContextKind(req.prefix, req.language)
-  const system = [
+  // Spelling help only applies to prose (comments/docstrings), never to identifiers in code.
+  const partial = s.inlineSpellAssist && kind === 'comment' ? (req.partialWord ?? '') : ''
+  const lines = [
     `You are a code completion engine (like GitHub Copilot) for ${req.language}, helping solve "${req.questionTitle}".`,
     'You will be shown the code before the cursor and the code after it. Output ONLY the text that should be',
     'inserted at the cursor: no explanation, no markdown fences, no repetition of the text before the cursor.',
@@ -175,19 +242,31 @@ export function buildInlinePrompt(req: InlineCompleteRequest): { system: string;
           'indentation. Look at the code around the cursor so the comment is accurate (real complexity, real names).'
         ]
       : [
-          'Usually finish the current line and add at most a few more lines of code. Preserve the indentation style.',
           'If nothing sensible should be inserted, output nothing.'
         ]),
-    ...(req.conversation
-      ? [
-          '',
-          'The user has been talking with their coach about this code. Let that intent steer the suggestion (e.g. if they',
-          'just agreed to use a hash map, suggest the hash-map step, not the brute-force one):',
-          req.conversation
-        ]
-      : [])
-  ].join('\n')
-
+    SCOPE_RULES[s.inlineScope](s.inlineMaxLines)
+  ]
+  if (partial) {
+    lines.push(
+      `SPELLING: the text ends in the partly typed word "${partial}", which may be misspelled. Begin your output with that`,
+      'word written out COMPLETELY and CORRECTLY (start from the first letter of the word, including letters already typed),',
+      'then continue as the length rule allows.'
+    )
+  }
+  if (s.inlineChatContext !== 'off' && req.spokenIntent) {
+    lines.push(
+      '',
+      `The user just SAID this out loud — treat it as the strongest signal of what they want written next: "${req.spokenIntent}"`
+    )
+  }
+  if (s.inlineChatContext !== 'off' && req.conversation) {
+    lines.push(
+      '',
+      'The user has been talking with their coach about this code. Let that intent steer the suggestion (e.g. if they',
+      'just agreed to use a hash map, suggest the hash-map step, not the brute-force one):',
+      req.conversation
+    )
+  }
   const user = `<before_cursor>\n${req.prefix}\n</before_cursor>\n<after_cursor>\n${req.suffix}\n</after_cursor>`
-  return { system, user }
+  return { system: lines.join('\n'), user }
 }

@@ -44,6 +44,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,15 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def jlog(ev: str, **data: Any) -> None:
+    """Structured event for the app's per-run session log: one `@ev {json}` line on stdout, parsed by
+    src/main/services/voiceSidecar.ts. Keep payloads small (lengths and timings, never audio)."""
+    try:
+        print("@ev " + json.dumps({"ev": ev, **data}, default=str), flush=True)
+    except Exception:  # noqa: BLE001 - logging must never take the sidecar down
+        pass
+
+
 SLOW_MS = float(os.environ.get("VOICE_SLOW_MS", "300"))
 
 
@@ -80,8 +90,10 @@ class timed:
 
     def __exit__(self, *exc):
         ms = (time.perf_counter() - self.t0) * 1e3
-        if ms >= SLOW_MS:
-            log(f"slow: {self.label} took {ms:.0f} ms")
+        # Partial captions run constantly; only a real stall (>=1 s) is worth a log line.
+        floor = 1000 if self.label.startswith("partial asr") else SLOW_MS
+        if ms >= floor:
+            jlog("slow", label=self.label, ms=round(ms))
 
 
 # ------------------------------------------------------------------ Windows user env (HF cache, tokens)
@@ -345,6 +357,23 @@ class VoiceSession:
 
     # -- mic thread: VAD + endpointing + ASR
     def mic_worker(self) -> None:
+        """Supervisor: if the listening loop ever dies, say so (log + client error) and restart it instead of
+        leaving the app 'listening' to nothing."""
+        for attempt in range(1, 6):
+            try:
+                self._mic_loop()
+                return  # clean exit (session closed)
+            except Exception as e:  # noqa: BLE001
+                jlog("mic_worker_crash", attempt=attempt, error=f"{type(e).__name__}: {str(e)[:200]}",
+                     tb=traceback.format_exc()[-1200:])
+                if self.closed:
+                    return
+                self.emit({"type": "error", "message": f"Voice listening crashed ({type(e).__name__}); restarting ({attempt}/5)"})
+                time.sleep(1.0)
+        jlog("mic_worker_gave_up")
+        self.emit({"type": "error", "message": "Voice listening crashed repeatedly and was stopped. Toggle the mic to retry."})
+
+    def _mic_loop(self) -> None:
         import torch
         from silero_vad import load_silero_vad
 
@@ -375,6 +404,8 @@ class VoiceSession:
                     if text:
                         last_partial_text = text
                         self.emit({"type": "partial", "text": text})
+            except Exception as e:  # noqa: BLE001
+                jlog("partial_asr_error", error=f"{type(e).__name__}: {str(e)[:200]}", tb=traceback.format_exc()[-800:])
             finally:
                 partial_busy.clear()
 
@@ -386,20 +417,33 @@ class VoiceSession:
             preroll.clear()
             vad.reset_states()
             self.emit({"type": "vad", "speaking": False})
-            if (t_last - t_on) * 1e3 < a.min_speech:
+            speech_ms = (t_last - t_on) * 1e3
+            jlog("vad", speaking=False, reason=reason, speech_ms=round(speech_ms))
+            if speech_ms < a.min_speech:
+                jlog("utterance_dropped", why="too_short", speech_ms=round(speech_ms))
                 return
             stt = self.server.stt
             if stt is None:
+                jlog("utterance_dropped", why="stt_not_loaded")
                 self.emit({"type": "error", "message": "Speech detected but the speech-to-text model isn't loaded yet."})
                 return
             t0 = time.perf_counter()
-            with timed(f"final asr ({len(audio) / SR:.0f}s utt)"):
-                text = stt.recognize(audio)
+            try:
+                with timed(f"final asr ({len(audio) / SR:.0f}s utt)"):
+                    text = stt.recognize(audio)
+            except Exception as e:  # noqa: BLE001 - one bad utterance must not kill the listening thread
+                jlog("asr_error", error=f"{type(e).__name__}: {str(e)[:200]}", tb=traceback.format_exc()[-800:])
+                self.emit({"type": "error", "message": f"Speech recognition failed: {type(e).__name__}: {str(e)[:160]}"})
+                return
             asr_ms = (time.perf_counter() - t0) * 1e3
             last_partial_text = ""
+            turn_p = None if ep.last_p is None else round(ep.last_p, 2)
+            jlog("final", chars=len(text), utt_s=round(len(audio) / SR, 1), asr_ms=round(asr_ms), turn=reason,
+                 turn_p=turn_p, pcm_backlog=self.pcm_q.qsize())
             if text:
-                self.emit({"type": "final", "text": text, "asr_ms": round(asr_ms), "turn": reason,
-                           "turn_p": None if ep.last_p is None else round(ep.last_p, 2)})
+                self.emit({"type": "final", "text": text, "asr_ms": round(asr_ms), "turn": reason, "turn_p": turn_p})
+            else:
+                jlog("utterance_dropped", why="empty_transcript")
 
         while not self.closed:
             try:
@@ -425,6 +469,7 @@ class VoiceSession:
                             utt = list(preroll)
                             last_partial_len = 0
                             ep.start_utterance()
+                            jlog("vad", speaking=True, p=round(p, 2))
                             self.emit({"type": "vad", "speaking": True})
                         continue
                     # Two-stage barge-in while the agent talks (ported from voiceAgent/agent/talk.py): speech credit
@@ -436,9 +481,11 @@ class VoiceSession:
                         hot = min(hot + 1, a.bargein_chunks + a.duck_chunks)
                         if hot >= a.duck_chunks and not ducked:
                             ducked = True
+                            jlog("duck", on=True, hot=hot)
                             self.emit({"type": "duck", "on": True})
                         if hot >= a.bargein_chunks:
                             hot, miss_run, ducked = 0, 0, False
+                            jlog("bargein", p=round(p, 2))
                             self.emit({"type": "bargein"})
                             speaking, t_on, t_last = True, now, now
                             utt = list(preroll)
@@ -451,6 +498,7 @@ class VoiceSession:
                             miss_run += 1
                             if miss_run >= a.bargein_release_chunks:
                                 ducked, hot, miss_run = False, 0, 0
+                                jlog("duck", on=False)
                                 self.emit({"type": "duck", "on": False})
                     continue
 
@@ -472,37 +520,60 @@ class VoiceSession:
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
+            jlog("bad_client_frame", head=str(raw)[:80])
             return
         t = msg.get("type")
         if t == "mic":
             self.mic_on = bool(msg.get("on"))
+            jlog("mic", on=self.mic_on)
         elif t == "agent_speaking":
             self.agent_speaking = bool(msg.get("on"))
+            jlog("agent_speaking", on=self.agent_speaking)
         elif t == "tts_cancel":
             self.tts_gen += 1
+            jlog("tts_cancel", gen=self.tts_gen)
         elif t == "tts":
             asyncio.create_task(self.synth(msg, self.tts_gen))
 
     async def synth(self, msg: dict, gen: int) -> None:
         tid, text = str(msg.get("id", "")), str(msg.get("text", "")).strip()
         engine, voice = msg.get("engine", "edge"), msg.get("voice") or "en-US-AvaNeural"
-        if not text:
+        # Edge answers "NoAudioReceived" for text with nothing to pronounce ("**", ")", "—"): skip it quietly.
+        if not any(ch.isalnum() for ch in text):
+            if text:
+                jlog("tts_skipped", id=tid, engine=engine, text=text[:20], why="nothing speakable")
             await self.out.put({"type": "tts_end", "id": tid})
             return
+        t0 = time.perf_counter()
         try:
             if engine == "kokoro":
                 kokoro = await self.loop.run_in_executor(None, self.server.kokoro)
                 data = await self.loop.run_in_executor(None, kokoro.synth, text, voice if voice[:1] in "ab" else None)
                 fmt = "pcm16_24k"
             else:
-                data = await edge_tts_mp3(text, voice)
+                try:
+                    data = await edge_tts_mp3(text, voice)
+                except Exception as first:  # noqa: BLE001
+                    # The Edge service drops the odd request; one quick retry recovers almost all of them.
+                    if gen != self.tts_gen:
+                        return
+                    jlog("tts_retry", id=tid, engine=engine, error=f"{type(first).__name__}: {str(first)[:120]}")
+                    await asyncio.sleep(0.25)
+                    data = await edge_tts_mp3(text, voice)
+                if not data:
+                    raise RuntimeError("edge returned no audio")
                 fmt = "mp3"
         except Exception as e:  # noqa: BLE001
-            await self.out.put({"type": "error", "message": f"TTS failed ({engine}): {type(e).__name__}: {str(e)[:200]}"})
+            jlog("tts_error", id=tid, engine=engine, chars=len(text), error=f"{type(e).__name__}: {str(e)[:200]}")
+            # A lost fragment of a sentence isn't worth a red banner; a whole sentence failing is.
+            if len(text) >= 12:
+                await self.out.put({"type": "error", "message": f"TTS failed ({engine}): {type(e).__name__}: {str(e)[:200]}"})
             await self.out.put({"type": "tts_end", "id": tid})
             return
         if gen != self.tts_gen:  # cancelled while synthesising (barge-in)
+            jlog("tts_discarded", id=tid, engine=engine, ms=round((time.perf_counter() - t0) * 1e3))
             return
+        jlog("tts", id=tid, engine=engine, chars=len(text), bytes=len(data), ms=round((time.perf_counter() - t0) * 1e3))
         await self.out.put({"type": "tts_audio", "id": tid, "format": fmt, "data": base64.b64encode(data).decode("ascii")})
         await self.out.put({"type": "tts_end", "id": tid})
 
@@ -531,6 +602,7 @@ class Server:
             try:
                 self.smart_turn = SmartTurn()
                 log("smart turn: loaded")
+                jlog("model_loaded", model="smart-turn")
             except Exception as e:  # noqa: BLE001
                 log(f"smart turn unavailable ({type(e).__name__}: {str(e)[:120]}); using silence-only endpointing")
         try:
@@ -542,6 +614,7 @@ class Server:
             self.stt_state = "none"
             self.stt_detail = f"STT unavailable: {type(e).__name__}: {str(e)[:300]}"
         log(f"stt: {self.stt_state} — {self.stt_detail}")
+        jlog("stt_ready", state=self.stt_state, detail=self.stt_detail)
         for s in list(self.sessions):
             s.emit(self.ready_msg())
 
@@ -556,28 +629,46 @@ class Server:
         threading.Thread(target=sess.mic_worker, daemon=True).start()
         await ws.send(json.dumps(self.ready_msg()))
         log("client connected")
+        jlog("client_connected")
+        frames = {"n": 0}
 
         async def sender() -> None:
             while True:
                 msg = await sess.out.get()
                 await ws.send(json.dumps(msg))
 
+        async def heartbeat() -> None:
+            # Every 15 s while the mic is on: are frames arriving, is the queue draining?
+            last_n = 0
+            while True:
+                await asyncio.sleep(15)
+                if sess.mic_on:
+                    jlog("heartbeat", frames=frames["n"] - last_n, pcm_backlog=sess.pcm_q.qsize(),
+                         agent_speaking=sess.agent_speaking, stt=self.stt_state)
+                last_n = frames["n"]
+
         send_task = asyncio.create_task(sender())
+        hb_task = asyncio.create_task(heartbeat())
         try:
             async for frame in ws:
                 if isinstance(frame, bytes):
+                    frames["n"] += 1
                     if len(frame) >= 2:
                         sess.pcm_q.put(np.frombuffer(frame, dtype="<i2").astype(np.float32) / 32768.0)
                 else:
                     await sess.handle_text(frame)
         except Exception as e:  # noqa: BLE001
             log(f"client error: {type(e).__name__}: {e}")
+            jlog("client_error", error=f"{type(e).__name__}: {e}")
         finally:
             sess.closed = True
             sess.pcm_q.put(None)
             send_task.cancel()
+            hb_task.cancel()
             self.sessions.discard(sess)
             log("client disconnected")
+            jlog("client_disconnected", frames=frames["n"], close_code=getattr(ws, "close_code", None),
+                 close_reason=str(getattr(ws, "close_reason", "") or "")[:80])
 
     async def health(self, connection, request):
         """Plain HTTP GET /health on the same port, for readiness checks."""
@@ -591,8 +682,10 @@ class Server:
             t0 = time.perf_counter()
             await edge_tts_mp3("Ready.", "en-US-AvaNeural")
             log(f"edge tts: warm ({(time.perf_counter() - t0) * 1e3:.0f} ms)")
+            jlog("edge_warm", ms=round((time.perf_counter() - t0) * 1e3))
         except Exception as e:  # noqa: BLE001
             log(f"edge tts warm-up failed (offline?): {type(e).__name__}: {str(e)[:120]}")
+            jlog("edge_warm_failed", error=f"{type(e).__name__}: {str(e)[:120]}")
 
     async def run(self) -> None:
         import websockets

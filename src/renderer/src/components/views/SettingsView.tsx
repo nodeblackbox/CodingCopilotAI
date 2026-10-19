@@ -3,8 +3,9 @@ import { Button } from '@renderer/components/ui/Button'
 import { Input } from '@renderer/components/ui/Input'
 import { useAppStore, DEFAULT_VOICE } from '@renderer/state/store'
 import { listWebSpeechVoices } from '@renderer/lib/voiceClient'
-import type { AiProviderId, TtsEngine } from '@shared/types'
-import { ANTHROPIC_MODELS, COST_LIMITS } from '@shared/types'
+import type { AiProviderId, HelpStyle, InlineChatContext, InlineScope, InlineTrigger, TtsEngine } from '@shared/types'
+import { GHOST_COLORS, INLINE_DEFAULTS, INLINE_PRESETS, INLINE_SCOPES } from '@shared/inline'
+import { ANTHROPIC_MODELS, COST_LIMITS, HELP_STYLES } from '@shared/types'
 
 const PROVIDER_LABEL: Record<AiProviderId, string> = {
   anthropic: 'Anthropic Claude',
@@ -142,10 +143,41 @@ export function SettingsView() {
               <Input value={settings.voiceName} onChange={(e) => updateSettings({ voiceName: e.target.value })} className="h-8 w-56" />
             </div>
           </Row>
-          <Row label="Guided step-by-step mode" hint="One instruction at a time instead of full explanations.">
-            <Button size="sm" variant={settings.guidedVoice ? 'default' : 'outline'} onClick={() => updateSettings({ guidedVoice: !settings.guidedVoice })}>
-              {settings.guidedVoice ? 'On' : 'Off'}
+          <Row label="How the copilot helps" hint={`${HELP_STYLES.find((h) => h.id === settings.helpStyle)?.hint ?? ''} Say "I give up" to unlock the answer in Coach/Guided.`}>
+            <select
+              data-testid="help-style-setting"
+              value={settings.helpStyle}
+              onChange={(e) => {
+                const id = e.target.value as HelpStyle
+                updateSettings({ helpStyle: id, guidedVoice: id === 'guided' })
+              }}
+              className={selectClass}
+            >
+              {HELP_STYLES.map((h) => (
+                <option key={h.id} value={h.id}>
+                  {h.label}
+                </option>
+              ))}
+            </select>
+          </Row>
+          <Row label="Apply edits straight away" hint="On: edits you ask for land in the editor at once (Undo / Ctrl+Z). Rewrites that would delete most of the file still wait for review. Off: every whole-file rewrite waits for Accept / Reject.">
+            <Button size="sm" variant={settings.autoApplyEdits ? 'default' : 'outline'} onClick={() => updateSettings({ autoApplyEdits: !settings.autoApplyEdits })}>
+              {settings.autoApplyEdits ? 'On' : 'Off'}
             </Button>
+          </Row>
+          <Row label="Reply volume" hint="How loud the assistant's voice plays back. Deafen (in the copilot panel) overrides this without changing the saved value.">
+            <div className="flex items-center gap-2">
+              <input
+                data-testid="volume-slider"
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(settings.voiceVolume * 100)}
+                onChange={(e) => updateSettings({ voiceVolume: Number(e.target.value) / 100 })}
+                className="h-1 w-40 cursor-pointer accent-teal-400"
+              />
+              <span className="w-9 text-right font-mono text-[12px] text-zinc-500">{Math.round(settings.voiceVolume * 100)}%</span>
+            </div>
           </Row>
           <Row
             label="Voice server"
@@ -170,13 +202,166 @@ export function SettingsView() {
           </Row>
         </div>
 
-        <h2 className="mb-3 mt-8 text-[13px] font-medium text-zinc-300">Editor</h2>
-        <div className="divide-y divide-white/[0.06] rounded-xl border border-white/[0.06]">
-          <Row label="Inline completions" hint="Copilot-style grey suggestions as you type. Tab accepts, Esc dismisses.">
+        <h2 className="mb-1 mt-8 text-[13px] font-medium text-zinc-300">Ghost text</h2>
+        <p className="mb-3 text-[12px] text-zinc-500">
+          Grey suggestions as you type. <kbd className="rounded bg-white/[0.06] px-1">Tab</kbd> accepts,{' '}
+          <kbd className="rounded bg-white/[0.06] px-1">Esc</kbd> dismisses, <kbd className="rounded bg-white/[0.06] px-1">Alt+\</kbd> asks for one now. You can also say
+          “ghost text off”, “ghost text one line”, “ghost text comments only”.
+        </p>
+        <div className="divide-y divide-white/[0.06] rounded-xl border border-white/[0.06]" data-testid="ghost-settings">
+          <Row label="Presets" hint="One-click starting points; every setting below can still be tweaked.">
+            <div className="flex max-w-[22rem] flex-wrap justify-end gap-1.5">
+              {INLINE_PRESETS.map((p) => (
+                <Button key={p.id} size="sm" variant="outline" title={p.hint} data-testid={`ghost-preset-${p.id}`} onClick={() => updateSettings(p.patch)}>
+                  {p.label}
+                </Button>
+              ))}
+            </div>
+          </Row>
+          <Row label="Ghost text" hint="Master switch for suggestions in the editor.">
             <Button size="sm" variant={settings.inlineCompletions ? 'default' : 'outline'} onClick={() => updateSettings({ inlineCompletions: !settings.inlineCompletions })}>
               {settings.inlineCompletions ? 'On' : 'Off'}
             </Button>
           </Row>
+          <Row label="Suggestion length" hint={INLINE_SCOPES.find((x) => x.id === settings.inlineScope)?.hint}>
+            <select
+              data-testid="ghost-scope-setting"
+              value={settings.inlineScope}
+              onChange={(e) => updateSettings({ inlineScope: e.target.value as InlineScope })}
+              className={selectClass}
+            >
+              {INLINE_SCOPES.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.label}
+                </option>
+              ))}
+            </select>
+          </Row>
+          {settings.inlineScope === 'lines' && (
+            <Row label="Max lines" hint="Hard cap for “Few lines” — longer suggestions are cut off here.">
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={2}
+                  max={15}
+                  value={settings.inlineMaxLines}
+                  onChange={(e) => updateSettings({ inlineMaxLines: Number(e.target.value) })}
+                  className="h-1 w-40 cursor-pointer accent-teal-400"
+                />
+                <span className="w-9 text-right font-mono text-[12px] text-zinc-500">{settings.inlineMaxLines}</span>
+              </div>
+            </Row>
+          )}
+          <Row label="In code" hint="Suggest while you write code.">
+            <Button size="sm" variant={settings.inlineInCode ? 'default' : 'outline'} onClick={() => updateSettings({ inlineInCode: !settings.inlineInCode })}>
+              {settings.inlineInCode ? 'On' : 'Off'}
+            </Button>
+          </Row>
+          <Row label="In comments" hint="Suggest plain-English text while you write comments and docstrings.">
+            <Button size="sm" variant={settings.inlineInComments ? 'default' : 'outline'} onClick={() => updateSettings({ inlineInComments: !settings.inlineInComments })}>
+              {settings.inlineInComments ? 'On' : 'Off'}
+            </Button>
+          </Row>
+          <Row label="Spelling help" hint="In comments: a half-typed or misspelled word is completed correctly (recie → receive).">
+            <Button size="sm" variant={settings.inlineSpellAssist ? 'default' : 'outline'} onClick={() => updateSettings({ inlineSpellAssist: !settings.inlineSpellAssist })}>
+              {settings.inlineSpellAssist ? 'On' : 'Off'}
+            </Button>
+          </Row>
+          <Row label="When to suggest" hint="Automatic as you type, or only when you press Alt+\ (saves API calls).">
+            <select
+              value={settings.inlineTrigger}
+              onChange={(e) => updateSettings({ inlineTrigger: e.target.value as InlineTrigger })}
+              className={selectClass}
+            >
+              <option value="auto">Automatically</option>
+              <option value="manual">Only on Alt+\</option>
+            </select>
+          </Row>
+          <Row label="Pause before suggesting" hint="How long you must stop typing first. Longer = fewer calls, shorter = snappier.">
+            <div className="flex items-center gap-2">
+              <input
+                type="range"
+                min={150}
+                max={1000}
+                step={50}
+                value={settings.inlineDebounceMs}
+                onChange={(e) => updateSettings({ inlineDebounceMs: Number(e.target.value) })}
+                className="h-1 w-40 cursor-pointer accent-teal-400"
+              />
+              <span className="w-14 text-right font-mono text-[12px] text-zinc-500">{settings.inlineDebounceMs} ms</span>
+            </div>
+          </Row>
+          <Row
+            label="What it listens to"
+            hint="Everything: the whole chat. Only what I say: spoken turns plus your latest spoken instruction steer the suggestion. Nothing: code only."
+          >
+            <select
+              data-testid="ghost-context"
+              value={settings.inlineChatContext}
+              onChange={(e) => updateSettings({ inlineChatContext: e.target.value as InlineChatContext })}
+              className={selectClass}
+            >
+              <option value="all">Everything in the chat</option>
+              <option value="voice">Only what I say out loud</option>
+              <option value="off">Nothing (code only)</option>
+            </select>
+          </Row>
+          <Row label="Colour" hint="Preview below updates as you change the look.">
+            <div className="flex items-center gap-1.5">
+              {Object.entries(GHOST_COLORS).map(([id, c]) => (
+                <button
+                  key={id}
+                  title={c.label}
+                  data-testid={`ghost-color-${id}`}
+                  onClick={() => updateSettings({ ghostColor: id })}
+                  className={`h-6 w-6 rounded-full border-2 transition-transform ${settings.ghostColor === id ? 'scale-110 border-white' : 'border-transparent opacity-70 hover:opacity-100'}`}
+                  style={{ background: c.hex }}
+                />
+              ))}
+            </div>
+          </Row>
+          <Row label="Opacity" hint="How faint the suggestion is.">
+            <div className="flex items-center gap-2">
+              <input
+                type="range"
+                min={15}
+                max={100}
+                value={Math.round(settings.ghostOpacity * 100)}
+                onChange={(e) => updateSettings({ ghostOpacity: Number(e.target.value) / 100 })}
+                className="h-1 w-40 cursor-pointer accent-teal-400"
+              />
+              <span className="w-9 text-right font-mono text-[12px] text-zinc-500">{Math.round(settings.ghostOpacity * 100)}%</span>
+            </div>
+          </Row>
+          <Row label="Italic">
+            <Button size="sm" variant={settings.ghostItalic ? 'default' : 'outline'} onClick={() => updateSettings({ ghostItalic: !settings.ghostItalic })}>
+              {settings.ghostItalic ? 'On' : 'Off'}
+            </Button>
+          </Row>
+          <div className="px-4 py-3">
+            <div className="rounded-lg bg-[#0a0c11] px-4 py-3 font-mono text-[13px] text-zinc-200" data-testid="ghost-preview">
+              <span>for i in range(len(nums)):</span>
+              <span
+                style={{
+                  color: (GHOST_COLORS[settings.ghostColor] ?? GHOST_COLORS.default).hex,
+                  opacity: settings.ghostOpacity,
+                  fontStyle: settings.ghostItalic ? 'italic' : 'normal'
+                }}
+              >
+                {' '}
+                {'    if target - nums[i] in seen:'}
+              </span>
+            </div>
+          </div>
+          <Row label="Reset ghost text" hint="Back to the default length, triggers and look.">
+            <Button size="sm" variant="outline" onClick={() => updateSettings({ ...INLINE_DEFAULTS, inlineCompletions: true })}>
+              Reset
+            </Button>
+          </Row>
+        </div>
+
+        <h2 className="mb-3 mt-8 text-[13px] font-medium text-zinc-300">Editor</h2>
+        <div className="divide-y divide-white/[0.06] rounded-xl border border-white/[0.06]">
           <Row label="Default language">
             <select value={settings.language} onChange={(e) => updateSettings({ language: e.target.value })} className={selectClass}>
               <option value="python">Python</option>

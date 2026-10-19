@@ -17,6 +17,7 @@ import { getProvider, resolveProvider, listProviderStatus } from '@main/services
 import type { AiProvider, TokenUsage } from '@main/services/aiProviders/types'
 import { buildAskSystemPrompt, buildChipPrompt, buildInlinePrompt } from '@main/services/prompts'
 import { getSettings } from '@main/services/store'
+import { inlineContextKind, inlineMaxTokens, limitInline, restoreFlattenedNewlines } from '@shared/inline'
 import { estimateTokens, getUsageSummary, recordUsage } from '@main/services/usageLedger'
 import { logTurn } from '@main/services/turnLog'
 import { logger } from '@main/logger'
@@ -35,9 +36,13 @@ const isAbort = (err: unknown): boolean => (err as Error)?.name === 'AbortError'
 class AiDisabledError extends Error {}
 
 function assertEnabled(settings: Settings): void {
-  if (!settings.aiEnabled) throw new AiDisabledError('AI calls are switched off (toggle "AI on" in the copilot header).')
+  if (!settings.aiEnabled) {
+    logger.warn('ai:refused', 'AI is switched off')
+    throw new AiDisabledError('AI calls are switched off (toggle "AI on" in the copilot header).')
+  }
   const today = getUsageSummary().todayCostUsd
   if (settings.dailyBudgetUsd > 0 && today >= settings.dailyBudgetUsd) {
+    logger.warn('ai:refused', `Daily budget reached (${today.toFixed(3)} of ${settings.dailyBudgetUsd})`)
     throw new AiDisabledError(
       `Daily budget reached (≈$${today.toFixed(2)} of $${settings.dailyBudgetUsd.toFixed(2)} today). Raise it in Settings if you mean to keep going.`
     )
@@ -69,9 +74,15 @@ function trimForPrompt<T extends AskRequest>(req: T): T {
   const merged: ChatMessage[] = []
   for (const m of req.messages) {
     if (m.role === 'system' || !m.text.trim()) continue
+    // A reply the user talked over: the model should know they only heard the first part.
+    // Edits it made ("_(typed 2 lines at line 7)_") still happened, so they stay.
+    const text =
+      m.role === 'assistant' && m.heard !== undefined
+        ? [`${m.heard.trim() || '(nothing)'} [cut off — they did not hear the rest]`, ...(m.text.match(/_\([^)]*\)_/g) ?? [])].join(' ')
+        : m.text
     const last = merged[merged.length - 1]
-    if (last && last.role === m.role) last.text = `${last.text}\n\n${m.text}`
-    else merged.push({ role: m.role, text: m.text })
+    if (last && last.role === m.role) last.text = `${last.text}\n\n${text}`
+    else merged.push({ role: m.role, text })
   }
   const messages = merged.slice(-COST_LIMITS.historyMessages)
   // Anthropic requires the first message to be from the user, and the last one must be the new user turn.
@@ -156,7 +167,7 @@ export function registerAiIpc(): void {
       const text = await provider.complete({
         system,
         messages: req.messages,
-        maxTokens: req.guidedVoice ? 200 : 900,
+        maxTokens: req.spoken ? 900 : 1500,
         model: settings.chatModel,
         onUsage: rec.onUsage
       })
@@ -201,7 +212,8 @@ export function registerAiIpc(): void {
         {
           system,
           messages: req.messages,
-          maxTokens: req.guidedVoice ? 200 : req.spoken ? 300 : 900,
+          // Room for a LINES/REPLACE block on top of the spoken sentence: a truncated block is never applied.
+          maxTokens: req.spoken ? 900 : 1500,
           model: settings.chatModel,
           signal: ac.signal,
           onUsage: rec.onUsage
@@ -236,6 +248,9 @@ export function registerAiIpc(): void {
   ipcMain.handle(IPC.aiInlineComplete, async (_evt, req: InlineCompleteRequest): Promise<InlineCompleteResponse> => {
     const settings = await getSettings()
     if (!settings.inlineCompletions) return { text: '' }
+    // Belt and braces: the renderer already skips these, but a stale request must not bill us for a disabled context.
+    const kind = inlineContextKind(req.prefix, req.language)
+    if ((kind === 'comment' && !settings.inlineInComments) || (kind === 'code' && !settings.inlineInCode)) return { text: '' }
     try {
       assertEnabled(settings)
     } catch {
@@ -249,21 +264,31 @@ export function registerAiIpc(): void {
     inlineAbort?.abort()
     const ac = new AbortController()
     inlineAbort = ac
-    const { system, user } = buildInlinePrompt(req)
+    const { system, user } = buildInlinePrompt(req, settings)
     const rec = usageRecorder(provider, model, 'inline', () => system + user)
     try {
       const text = await provider.complete({
         system,
         messages: [{ role: 'user', text: user }],
-        maxTokens: 160,
+        maxTokens: inlineMaxTokens(settings.inlineScope, settings.inlineMaxLines),
         model: settings.chatModel,
         signal: ac.signal,
         onUsage: rec.onUsage
       })
       rec.finish(text)
-      return { text: cleanInline(stripFences(text), req.prefix) }
+      // With spelling help the answer starts from the first letter of the word, so the "echo of the current line" strip would misfire.
+      const spelling = settings.inlineSpellAssist && kind === 'comment' && Boolean(req.partialWord)
+      const cleaned = spelling ? stripFences(text).replace(/\s+$/, '') : cleanInline(stripFences(text), req.prefix)
+      let out = limitInline(restoreFlattenedNewlines(cleaned), settings.inlineScope, settings.inlineMaxLines)
+      // Short scopes: models like to restate the half-typed word ("comp" → "complement"); only the remainder may be inserted.
+      const partial = req.partialWord ?? ''
+      if (!spelling && partial && (settings.inlineScope === 'word' || settings.inlineScope === 'phrase') && out.length > partial.length && out.startsWith(partial)) {
+        out = out.slice(partial.length)
+      }
+      return { text: out }
     } catch (err) {
-      if (!isAbort(err)) logger.warn('ai:inline', 'Inline completion failed', (err as Error).message)
+      // Rate limits are already reported (throttled) by the provider; everything else is worth a line.
+      if (!isAbort(err) && !/ 429[: ]/.test((err as Error).message)) logger.warn('ai:inline', 'Inline completion failed', (err as Error).message)
       return { text: '' }
     }
   })

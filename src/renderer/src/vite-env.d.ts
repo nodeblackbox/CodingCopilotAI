@@ -8,6 +8,8 @@ import type {
   ChipResponse,
   InlineCompleteRequest,
   InlineCompleteResponse,
+  LogEventInput,
+  SessionInfo,
   Playground,
   ProviderStatus,
   RunRequest,
@@ -57,6 +59,9 @@ export interface PrepApi {
   debug: {
     openDevtools: () => Promise<void>
     getLogPath: () => Promise<string>
+    openLogsDir: () => Promise<string>
+    sessionInfo: () => Promise<SessionInfo>
+    logEvents: (events: LogEventInput[]) => void
   }
 }
 

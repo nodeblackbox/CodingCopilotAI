@@ -16,7 +16,26 @@ export type ChatRole = 'user' | 'assistant' | 'system'
 export interface ChatMessage {
   role: ChatRole
   text: string
+  /** How the turn happened. Lets ghost text use only what was said out loud ("voice" context mode). */
+  source?: 'voice' | 'typed'
+  /** Assistant reply the user talked over: the part they actually heard before cutting in. */
+  heard?: string
 }
+
+/**
+ * coach  = explains and hints; types only what you ask for; never the solution until you say "I give up".
+ * guided = one small step at a time, then waits.
+ * pair   = does what you ask, including writing code, but doesn't volunteer the answer.
+ * listen = in the background: hears everything, answers only direct questions or commands.
+ */
+export type HelpStyle = 'coach' | 'guided' | 'pair' | 'listen'
+
+export const HELP_STYLES: ReadonlyArray<{ id: HelpStyle; label: string; hint: string }> = [
+  { id: 'coach', label: 'Coach', hint: 'Hints and explanations. Types only what you ask for. No full solution until you say "I give up".' },
+  { id: 'guided', label: 'Guided', hint: 'One small step at a time, then waits for you.' },
+  { id: 'pair', label: 'Pair', hint: 'Does what you ask, including writing the code — but never volunteers the answer.' },
+  { id: 'listen', label: 'Listen', hint: 'Stays in the background. Hears everything, only answers direct questions or commands.' }
+]
 
 export type ChipId =
   | 'explain'
@@ -81,6 +100,13 @@ export interface AskRequest {
   recentChanges?: string
   /** 'scratch' = free coding with no assigned problem; questionPrompt then holds the user's own notes. */
   mode?: 'interview' | 'scratch'
+  helpStyle?: HelpStyle
+  /** The user explicitly asked for the answer ("I give up") in this session. */
+  solutionUnlocked?: boolean
+  /** Standing instructions/facts for this session ("doing brute force first"), kept beyond the history window. */
+  notes?: string[]
+  /** Output of the most recent Run, so "what does it print?" and tracebacks don't need pasting. */
+  lastRun?: string
 }
 
 /**
@@ -95,8 +121,17 @@ export const EDITOR_CMD = {
   goto: '<<<GOTO>>>',
   /** Body: "A-B" (or a single line). Highlights those lines; they become the selection for the next turn. */
   select: '<<<SELECT>>>',
+  /** Body: "A-B" (or one line) on the first line, then the replacement text. Empty replacement deletes the lines. */
+  lines: '<<<LINES>>>',
+  /** Empty body. Presses Run; the output arrives with the next turn. */
+  run: '<<<RUN>>>',
+  /** Body: one short standing fact or preference to remember for the rest of the session. */
+  note: '<<<NOTE>>>',
   end: '<<<END>>>'
 } as const
+
+/** A reply meaning "nothing to say" (listen style, filler): the renderer neither shows nor speaks it. */
+export const SILENT_REPLY = '(silent)'
 
 export interface AskResponse {
   text: string
@@ -127,7 +162,17 @@ export interface InlineCompleteRequest {
   questionTitle: string
   /** Recent chat/voice exchange, so the suggestion follows what the user is actually working toward. */
   conversation?: string
+  /** What the user last SAID out loud (within ~2 min) — the strongest steer for what to write next. */
+  spokenIntent?: string
+  /** Letters already typed of the word under the cursor, when the renderer wants spelling help. */
+  partialWord?: string
 }
+
+/** How much a ghost-text suggestion may contain (see src/shared/inline.ts). */
+export type InlineScope = 'word' | 'phrase' | 'line' | 'lines' | 'block'
+/** Which conversation feeds ghost text: nothing, only what was spoken, or everything in the thread. */
+export type InlineChatContext = 'off' | 'voice' | 'all'
+export type InlineTrigger = 'auto' | 'manual'
 
 export interface InlineCompleteResponse {
   text: string
@@ -164,7 +209,7 @@ export const ANTHROPIC_MODELS = {
 /** Hard limits that protect the API balance. */
 export const COST_LIMITS = {
   /** Messages of history sent with a turn (older ones are dropped, not summarised). */
-  historyMessages: 10,
+  historyMessages: 16,
   /** Editor text beyond this is cut from the prompt (head + tail kept). */
   maxCodeChars: 12_000,
   /** More chat turns than this within 60 s trips the brake: calls refused, mic switched off. */
@@ -208,6 +253,30 @@ export interface Settings {
   guidedVoice: boolean
   /** Copilot-style inline completions in the editor. */
   inlineCompletions: boolean
+  /** How much one suggestion may contain: a word, a phrase, a line, a few lines, or a block. */
+  inlineScope: InlineScope
+  /** Line cap for the "few lines" scope. */
+  inlineMaxLines: number
+  /** Suggest while writing code. */
+  inlineInCode: boolean
+  /** Suggest while writing comments / docstrings (plain-English prose). */
+  inlineInComments: boolean
+  /** auto = as you type; manual = only when you press Alt+\ . */
+  inlineTrigger: InlineTrigger
+  /** Pause after your last keystroke before asking, in ms. */
+  inlineDebounceMs: number
+  /** Conversation used to steer suggestions: none, only spoken turns, or the whole thread. */
+  inlineChatContext: InlineChatContext
+  /** In comments, fix a half-typed or misspelled word (recie → receive). */
+  inlineSpellAssist: boolean
+  /** Ghost text look: opacity 0.15–1, preset colour id (see GHOST_COLORS), italic. */
+  ghostOpacity: number
+  ghostColor: string
+  ghostItalic: boolean
+  /** How the copilot helps (see HELP_STYLES). Replaces the old guidedVoice switch, which maps to 'guided'. */
+  helpStyle: HelpStyle
+  /** Whole-file rewrites the user asked for land straight in the editor (Ctrl+Z / Undo) instead of waiting in a diff. */
+  autoApplyEdits: boolean
   ttsEngine: TtsEngine
   /** Edge TTS voice name (e.g. en-US-AvaNeural), a Kokoro voice (af_heart), or a partial speechSynthesis voice name ("Ava"). */
   voiceName: string
@@ -289,5 +358,25 @@ export const IPC = {
   voiceStatus: 'voice:status',
   voiceStateChanged: 'voice:stateChanged',
   debugOpenDevtools: 'debug:openDevtools',
-  debugGetLogPath: 'debug:getLogPath'
+  debugGetLogPath: 'debug:getLogPath',
+  /** Renderer → main (fire-and-forget): append a batch of events to the per-run session log. */
+  logEvents: 'log:events',
+  debugOpenLogsDir: 'debug:openLogsDir',
+  debugSessionInfo: 'debug:sessionInfo'
 } as const
+
+/** One renderer-originated session-log event (see src/main/services/sessionLog.ts). */
+export interface LogEventInput {
+  cat: string
+  ev: string
+  data?: unknown
+  level?: 'debug' | 'info' | 'warn' | 'error'
+}
+
+export interface SessionInfo {
+  sessionId: string
+  file: string
+  conversationFile: string
+  dir: string
+  bytes: number
+}
