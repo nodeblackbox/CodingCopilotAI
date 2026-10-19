@@ -5,7 +5,7 @@
 1. TTS: asks for one sentence in Ava's voice (Edge), checks that mp3 bytes come back. Kokoro is tried
    too but only reported (it's optional and needs its own compatible torch/numpy).
 2. STT round trip: streams a 16 kHz wav in as if it were the microphone and checks Parakeet's transcript.
-   Without --wav it looks for a recorded utterance in ../voiceAgent/audio (with its reference transcript),
+   Without --wav it looks for a recorded utterance in $PREP_TEST_AUDIO (default voice/test_audio) (with its reference transcript),
    and failing that synthesises one with Windows' built-in SAPI voice via PowerShell.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 SAPI_PHRASE = "What is the time complexity of a hash map lookup?"
-VOICE_AGENT_AUDIO = Path(__file__).resolve().parent.parent.parent / "voiceAgent" / "audio"
+VOICE_AGENT_AUDIO = Path(os.environ.get("PREP_TEST_AUDIO", "")) if os.environ.get("PREP_TEST_AUDIO") else Path(__file__).resolve().parent / "test_audio"
 
 
 def load_wav_16k(path: Path) -> np.ndarray:

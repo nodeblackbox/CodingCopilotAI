@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Interview-prep IDE: Electron + TypeScript + React + Monaco, with an AI copilot panel.",
   "main": "./out/main/index.js",
-  "author": "evil.pocket.money@gmail.com",
+  "author": "Anas Nasseur",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,7 +15,8 @@
     "lint": "eslint . --ext .ts,.tsx",
     "smoke": "node scripts/smoke.mjs",
     "logs": "node scripts/logs.mjs",
-    "test": "node --test scripts/inline.test.mjs scripts/voice.test.mjs"
+    "test": "node --test scripts/inline.test.mjs scripts/voice.test.mjs",
+    "demo": "node scripts/record-demo.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
@@ -48,5 +49,17 @@
     "tailwindcss": "^3.4.10",
     "typescript": "^5.5.4",
     "vite": "^5.4.5"
-  }
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "electron",
+    "react",
+    "monaco",
+    "voice",
+    "ai-copilot",
+    "interview-prep",
+    "typescript",
+    "speech-to-text",
+    "text-to-speech"
+  ]
 }

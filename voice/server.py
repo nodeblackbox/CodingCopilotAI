@@ -9,7 +9,7 @@ buffer, and holds the API keys). This process only does ears and mouth, so it ca
 Spawned by src/main/services/voiceSidecar.ts with VOICE_PYTHON (a venv with onnxruntime-gpu + torch CUDA).
 Prints `VOICE_PORT=<n>` on stdout once listening. Run by hand:  python -u voice/server.py --port 8765
 
-End of turn (ported from voiceAgent/agent/endpoint.py): Silero says "quiet"; after --min-silence ms Smart Turn
+End of turn (a port of my earlier voice-agent experiments): Silero says "quiet"; after --min-silence ms Smart Turn
 v3.2 (models/smart-turn-v3.2-cpu.onnx, ~10 ms on CPU) scores the last 8 s every --check-every ms; the turn
 ends when it's confident, or at --max-silence regardless. A mid-confidence score on a trailing filler word
 ("um", "so", "and") is held, so the model doesn't cut you off mid-hedge.
@@ -54,7 +54,6 @@ SR = 16000
 CHUNK = 512  # 32 ms — the frame size Silero VAD is tuned for
 HERE = Path(__file__).resolve().parent
 SMART_TURN_MODEL = HERE / "models" / "smart-turn-v3.2-cpu.onnx"
-HF_HOME_FALLBACK = r"D:\hf-cache\huggingface"
 
 # hedges / conjunctions a finished sentence doesn't end on — hold the turn unless Smart Turn is very confident
 FILLER_ENDINGS = {
@@ -117,8 +116,6 @@ def load_windows_user_env(names: list[str]) -> None:
                     os.environ[name] = str(value)
     except OSError:
         pass
-    if not os.environ.get("HF_HOME") and os.path.isdir(HF_HOME_FALLBACK):
-        os.environ["HF_HOME"] = HF_HOME_FALLBACK
 
 
 load_windows_user_env(["HF_HOME", "HF_TOKEN", "HF_HUB_OFFLINE"])
@@ -182,7 +179,7 @@ class ParakeetSTT:
     def _move_decoder_to_cpu(self) -> bool:
         """The transducer decoder runs once per encoder frame with tiny tensors — launch-bound on GPU.
         Rebuild that one session on CPU (int8 weights when available); the encoder stays on CUDA.
-        Ported from voiceAgent/bench/common.py, where this measured ~0.2 ms/frame vs several ms on GPU."""
+        Measured ~0.2 ms/frame vs several ms on GPU."""
         try:
             import onnxruntime as ort
 
@@ -472,7 +469,7 @@ class VoiceSession:
                             jlog("vad", speaking=True, p=round(p, 2))
                             self.emit({"type": "vad", "speaking": True})
                         continue
-                    # Two-stage barge-in while the agent talks (ported from voiceAgent/agent/talk.py): speech credit
+                    # Two-stage barge-in while the agent talks: speech credit
                     # accumulates per hit and only leaks --bargein-decay per miss, so a natural 32 ms VAD dip doesn't
                     # reset it. At --duck-chunks the playback is ducked (a backchannel "mhm" passes and the volume
                     # comes back); at --bargein-chunks the agent is cut and the utterance is captured.

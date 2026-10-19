@@ -1,6 +1,6 @@
 /**
  * Feed streamed LLM text fragments; get back complete sentences as they close, so TTS can start on
- * sentence one while the model is still writing sentence three. Port of the voiceAgent SentenceChunker.
+ * sentence one while the model is still writing sentence three.
  */
 export class SentenceChunker {
   private buf = ''

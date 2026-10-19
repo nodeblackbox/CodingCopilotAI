@@ -1,188 +1,143 @@
-# Prep — interview-prep IDE
+<div align="center">
 
-Electron + TypeScript + React + Monaco desktop app: a LeetCode-style practice workspace with an
-AI copilot panel (Ask + Agent modes) on the right, a real Monaco editor with Copilot-style ghost text
-in the center, the current question on the left, and navigation (Workspace / Playgrounds / Question
-library / Settings) on a far-left icon rail. You can **talk to it**: a local Python sidecar does
-speech-to-text (Parakeet) and text-to-speech (Edge TTS "Ava" or Kokoro), and replies stream back
-sentence by sentence while the model is still writing.
+<img src="docs/media/logo.svg" alt="Prep" width="84" height="84" />
 
-## Setup
+# Prep
+
+### Practice coding interviews *out loud.*
+
+An interview-prep IDE with a voice: a real Monaco editor, a LeetCode-style problem library, and an AI copilot you can **talk to**, interrupt, and point at your code.
+
+[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+![Electron](https://img.shields.io/badge/Electron-31-47848f?logo=electron&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)
+![Python](https://img.shields.io/badge/Voice%20sidecar-Python-3776ab?logo=python&logoColor=white)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-teal.svg)](LICENSE)
+
+<br />
+
+<img src="docs/media/demo.gif" alt="Prep in action: highlight lines, ask the copilot to explain them, optimize with a one-click diff" width="900" />
+
+<sub>Real app, real model calls. Recorded with <a href="scripts/record-demo.mjs"><code>scripts/record-demo.mjs</code></a>.</sub>
+
+</div>
+
+---
+
+## Why
+
+Most people practice coding interviews alone and in silence, but real interviews happen **out loud**. Prep is the editor I wanted for that: you talk through your approach, the copilot hears you, sees exactly what is on your screen, and answers by voice, and you can talk over it the way you would a human interviewer.
+
+> **Watch the 2-minute walkthrough:** *add the video link here (LinkedIn / YouTube).*
+
+## Features
+
+| | |
+|---|---|
+| 🎙️ **Talk to it** | Local speech-to-text ([Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)) and text-to-speech (Edge TTS "Ava" or Kokoro). Replies stream back **sentence by sentence**, so she starts speaking while the model is still writing. |
+| ✋ **Barge-in** | Talk over the assistant and she ducks, then stops mid-sentence. The model stream is cancelled and the copilot knows what you didn't hear. |
+| 👀 **It sees your code** | Every turn carries the file with line numbers, your caret, your selection, and a diff of what you changed since its last reply. |
+| 🖱️ **Highlight-first** | "Go to line 12", "highlight lines 3 to 6 and explain it". Navigation runs locally and instantly, with no model call. |
+| ✍️ **Ghost text** | Copilot-style inline completions in Monaco (Tab to accept), aware of the conversation and comment-aware. |
+| 🧠 **Choose your help** | **Coach** (hints, never the answer), **Guided** (one step at a time), **Pair** (does what you ask), **Listen** (quiet until asked). |
+| ⚡ **10 one-click agents** | Explain, hints, idea map, generate, test cases, lint, complete, **Optimize** (returns an Accept/Reject diff), check logic, related problems. |
+| 🗂️ **Question library & playgrounds** | 14 seeded problems (arrays, stacks, sliding window, binary search, intervals, DP). Every attempt is its own saved playground, plus a free-coding mode. |
+| ▶️ **Real execution** | Run Python locally and see the output in the console. |
+| 🛑 **Spend brakes** | Daily budget, rate brake, echo guard, prompt caps, and a live spend meter, because voice loops get expensive fast. |
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/ui-agent-diff.png" alt="Agent chips and the Optimize diff" /><br /><sub><b>Agent chips</b> and a reviewable Optimize diff</sub></td>
+<td width="50%"><img src="docs/media/ui-library.png" alt="Question library" /><br /><sub><b>Question library</b> with search and difficulty filters</sub></td>
+</tr>
+</table>
+
+## Quick start
+
+**Requirements:** Node.js 20+, and at least one model API key ([Anthropic](https://console.anthropic.com/), [Groq](https://console.groq.com/keys) or [Gemini](https://aistudio.google.com/apikey)). Python 3 is needed to **run** Python solutions and for the **voice** sidecar. Developed and tested on **Windows 11**; macOS and Linux should work for the editor and chat but are untested for voice.
 
 ```bash
+git clone https://github.com/OWNER/REPO.git prep
+cd prep
 npm install
-cp .env.example .env          # fill in your API keys
-py -3 -m pip install -r voice/requirements.txt   # once, for the voice sidecar (or point VOICE_PYTHON at a venv)
+
+cp .env.example .env        # then add at least one API key (Windows: copy .env.example .env)
 npm run dev
 ```
 
-`.env` is read only by the **main process** — API keys never reach the renderer/browser context.
+That is enough for the editor, the copilot chat, agent chips and ghost text. API keys are read **only by the Electron main process** and never reach the renderer.
 
-> Live keys were pasted into the chat that generated this scaffold. Treat those as burned —
-> rotate/revoke them in each provider's dashboard once you're done testing.
+### Enable voice (optional)
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate                       # macOS/Linux: source .venv/bin/activate
+pip install -r voice/requirements.txt
+# then in .env:  VOICE_PYTHON=<full path to that venv's python>
+```
+
+Click the mic in the copilot panel; the app starts the sidecar for you. The first run downloads the Parakeet model (about 2.4 GB). For GPU speed-ups see [docs/voice.md](docs/voice.md). Headphones are strongly recommended.
+
+## Configuration
+
+Everything lives in `.env` (copied from [`.env.example`](.env.example)):
+
+| Variable | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` / `GROQ_API_KEY` / `GEMINI_API_KEY` | At least one. Groq, when present, is also used for fast ghost-text. |
+| `VOICE_PYTHON` | Python interpreter for the **voice sidecar** only. Blank means `py -3` (Windows) or `python3`. (Running your solutions uses whichever `py`/`python`/`python3` is on `PATH`.) |
+| `PARAKEET_MODEL`, `PARAKEET_DEVICE` | Speech model id, and `auto \| cuda \| cpu`. |
+
+Provider, model, help style, ghost-text style, voice and the daily budget are changed in-app under **Settings**.
 
 ## Scripts
 
-| Script              | What it does |
-| ------------------- | ------------ |
-| `npm run dev`       | Electron + Vite dev server, DevTools open |
-| `npm run debug`     | Same, plus `--inspect=5858` on the main process (attach VS Code / `chrome://inspect`) |
-| `npm run build`     | Production build via `electron-vite build` |
-| `npm run typecheck` | `tsc --noEmit` across main/preload and renderer |
-| `npm run lint`      | ESLint over `src/` |
-| `npm run smoke`     | Drives the **built** app under Playwright end-to-end (layout, real Python run, streamed AI chat, inline completion, new-playground picks a new question, library Open, voice sidecar start, Optimize diff → Accept). Run `npm run build` first. ~3 small provider calls. |
-| `py -3 voice/test_client.py --port 8765` | Voice sidecar test with no mic: Edge TTS, optional Kokoro, and a wav → Parakeet round trip (uses a recording from `../voiceAgent/audio` if present, else Windows SAPI). Start the sidecar first: `py -3 -u voice/server.py --port 8765`. |
+| Command | What it does |
+|---|---|
+| `npm run dev` | Electron + Vite with hot reload |
+| `npm run build` / `npm start` | Production build / preview the build |
+| `npm run typecheck` · `npm run lint` · `npm test` | Static checks and unit tests (no API calls) |
+| `npm run smoke` | Drives the **built** app end to end with Playwright (about 10k tokens) |
+| `npm run logs` | Read per-run session logs without opening them raw |
+| `npm run demo` | Re-records the README demo on a throwaway profile (`DEMO_PROVIDER=groq OUT_DIR=docs/media`) |
 
-**Debugging:** in-app **Debug** menu; Settings → Debug → "Open DevTools" / "Show path". Main-process
-logs (including everything the Python sidecar prints) go to `<userData>/logs/main.log`.
-
-## Architecture
+## How it works
 
 ```
-src/
-  shared/types.ts          Types + IPC channel names shared by main/preload/renderer
-  main/                    Electron main process (Node)
-    env.ts                 FIRST import: loads .env before anything else (ES imports are hoisted)
-    index.ts               Window, CSP (only ws://127.0.0.1 allowed), mic permission, debug menu
-    ipc/ai.ts              chat (one-shot + streamed via IPC events, cancellable), chips, inline completions
-    ipc/voice.ts           start/stop/status of the Python sidecar
-    services/aiProviders/  Anthropic / Groq / Gemini behind one AiProvider {complete, stream} (SSE)
-    services/voiceSidecar.ts  spawns voice/server.py, reads VOICE_PORT= from stdout, broadcasts state
-    services/pythonRunner.ts  real local Python execution (temp file, 10s timeout)
-    services/store.ts      JSON persistence for settings + playgrounds under app.getPath('userData')
-    services/prompts.ts    system prompts: chips, chat (text / spoken / guided), ghost text
-  preload/index.ts         contextBridge — the ONLY surface the renderer can call
-  renderer/src/
-    state/store.ts         one Zustand store: question/editor, chips+diff, streamed chat, voice, playgrounds
-    lib/voiceClient.ts     mic capture (Chromium AEC) → 16 kHz PCM → ws; TTS audio → Web Audio playback; barge-in
-    lib/sentenceChunker.ts streamed tokens → sentences (TTS starts on sentence 1)
-    components/            rail/, workspace/ (question, Monaco + ghost text + diff + console, copilot), views/
-    data/questions.ts      14-question seeded bank with Python starters
-voice/
-  server.py                Python sidecar: Silero VAD + endpointing + Parakeet (onnx-asr) + Edge TTS / Kokoro over WebSocket
-  test_client.py           mic-less end-to-end test of the sidecar
+mic ─► renderer (echo cancel, 16 kHz) ─ws─► Python sidecar: Silero VAD ─ Smart Turn ─ Parakeet ─► text
+   ─► Electron main: provider.stream() ─► tokens ─► SentenceChunker ─ws─► Edge TTS / Kokoro ─► audio
+   you talk over it ─► sidecar "barge-in" ─► audio stops + model request cancelled
 ```
 
-### How a spoken turn flows
+The brain deliberately stays in Electron, where it sees the question and the live editor buffer and holds the keys. The sidecar is only ears and mouth, so it stays small, fast and swappable.
 
-```
-mic ─► renderer (AEC, 16 kHz int16) ─ws─► server.py: Silero VAD ─ endpoint ─ Parakeet ─► {"final": text}
-   ─► store.sendMessage(text, {speak}) ─ipc─► main: provider.stream() ─events─► renderer appends deltas
-   ─► SentenceChunker ─ws─► server.py Edge TTS (Ava) ─► mp3 ─► renderer decodes + schedules playback
-   user talks over it ─► server {"bargein"} ─► renderer stops audio + cancels the LLM stream
-```
+| Layer | Tech |
+|---|---|
+| Shell & UI | Electron, React 18, Tailwind, Zustand, Monaco |
+| Voice | Python, Silero VAD, Smart Turn v3.2, Parakeet TDT 0.6B v3 (ONNX), Edge TTS / Kokoro, WebSocket |
+| Models | Anthropic Claude, Groq (`gpt-oss-120b`), Gemini, streamed over SSE |
 
-The LLM "brain" deliberately stays in Electron: it sees the question and the live editor buffer and
-holds the keys. The sidecar is ears and mouth only, so it stays dumb, fast, and swappable.
+## Documentation
 
-### What the copilot knows and can do
+- [Architecture](docs/architecture.md): process model, IPC, state, folder map
+- [Voice pipeline](docs/voice.md): sidecar protocol, end-of-turn detection, barge-in, tuning, GPU setup
+- [Copilot behaviour](docs/copilot.md): what the model sees, editor commands, help styles, ghost text
+- [Spend brakes & costs](docs/spend-and-costs.md): what costs credits and how it is capped
+- [Testing & debugging](docs/testing.md): scripts, session logs, turn logs
 
-- Every chat/voice turn ships the file **with line numbers, a ▶ on the caret line, the caret position and the
-  current selection** (`src/main/services/prompts.ts` → `renderEditor`). "What line am I on?" has a real answer.
-- **Editor commands.** When you ask it to type/insert/add something, the model wraps the code in
-  `<<<INSERT>>> … <<<END>>>` (typed at your caret, undoable with Ctrl+Z) or `<<<REPLACE>>> … <<<END>>>`
-  (goes through the Accept/Reject diff). The renderer strips the block from what's shown and spoken, so Ava never
-  reads code aloud (`splitEditorCommands` in `state/store.ts`, `lib/editorBridge.ts`).
-- **Highlighting is first-class.** Selected lines are marked `▌` in the listing the model sees, the exact
-  selected text is quoted with "when they say *this* they mean this", and the copilot header shows
-  `Sel L3–7`. Selection is read straight from Monaco at send time. Chips ("Explain") scope to the selection.
-- **Navigation by voice/chat, no model call:** "go to line 12", "highlight lines 3 to 7", "select line 5"
-  are executed locally and instantly (`parseNavIntents` in `state/store.ts`); if the message is only
-  navigation the model isn't consulted at all. "Highlight 3 to 7 and explain it" highlights first, then asks.
-  The model can also emit `<<<GOTO>>>12<<<END>>>` / `<<<SELECT>>>4-6<<<END>>>` to point at code.
-- **Free coding mode** (Library → "Free coding", or Playgrounds): no problem statement; a notes box on the
-  left ("what I'm working on") is sent with every turn instead.
-- **Blank template vs. starter attempt:** buttons under the constraints swap the buffer between the
-  signature-only template and the starter (e.g. Two Sum's brute force to optimise from).
-- **It sees what you changed, not just the new snapshot:** each turn also carries a `+/-` diff of the editor
-  since the assistant's previous reply (`describeChanges` in `lib/diffLines.ts`). There is nothing to save —
-  the live buffer is read at the moment you send (or finish speaking).
-- **Turn log:** every chat/voice turn is written to `<userData>/turns.jsonl` — the exact code snapshot,
-  cursor, diff, trimmed history, reply, error, and timing — so "it didn't see my change" can be checked
-  against what the model was actually shown.
-- **Ghost text is conversation-aware:** inline completions include the last six chat/voice turns, so the
-  suggestion follows what you just agreed on with the coach.
-- **Modes are one click away:** Guided / Ghost text / voice engine pills in the copilot header, a ghost-text
-  toggle on the editor tab bar, and the header shows `Ln, Col` so you can see what the copilot sees.
+## Roadmap
 
-## What's real vs. mocked
+- [ ] Echo *detection* gate fed with what the renderer actually played (open-speaker use)
+- [ ] Kokoro as the default for fully offline speech
+- [ ] Real language server (pyright) beside the AI ghost text
+- [ ] Stronger sandboxing for Run/Submit (today: temp dir + timeout)
+- [ ] More languages for local execution, "Upload from file" and "Generate with AI" questions
 
-- **Monaco**: real, bundled locally, real workers. **Ghost text**: Monaco inline-completions provider,
-  350 ms debounce, Tab accepts. Requests go to Groq when it has a key (fastest), else the active provider.
-- **Chat**: streamed over SSE from Anthropic (`claude-sonnet-5`), Groq (`openai/gpt-oss-120b`, sent
-  with `reasoning_effort: low` or it returns ""), or Gemini (`gemini-flash-latest`). Cancel/barge-in aborts
-  the HTTP request.
-- **Python Run/Submit**: real local execution. Other languages: labeled mock.
-- **Voice**: real. Parakeet on CUDA (encoder) + CPU (decoder) via the voiceAgent venv, Smart Turn v3.2 end-of-turn,`n  Edge TTS "Ava" warm at ~130–290 ms per sentence, Kokoro available locally. Numbers and env notes below.
-- **Questions**: 14 seeded (Arrays & Hashing, Stack, Sliding Window, Binary Search, Intervals, DP).
-  "New playground" picks a problem you haven't started; Library → Open switches the workspace,
-  Practice starts a saved attempt. "Upload from file" / "Generate with AI" are not wired up yet.
-- **Language server** (pyright over LSP): not yet.
+## Contributing
 
-## Spend brakes (read this if a balance ever drained unexpectedly)
+Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Please never commit `.env` or paste live keys into issues or logs.
 
-On 2026-09-10 a voice session burned ~9M tokens in ~20 minutes. The mechanism: the mic heard the
-assistant through the speakers → Silero called it speech → barge-in → Parakeet transcribed *the assistant*
-→ that became a new "user" turn (billed for the full prompt even when cancelled) → the assistant answered →
-repeat every 1–2 s. Nothing in the app limited it. Now:
+## License
 
-- **Haiku 4.5 is the default chat model** (Settings → Spend controls), Sonnet is opt-in.
-- **Rate brake:** > 8 chat turns in 60 s → calls refused, mic switched off, red notice in the copilot header.
-- **Daily budget** (default $2, from `usage.jsonl` list-price estimates) → calls refused when reached.
-- **Echo guard:** a transcript whose words are ≥70% what the assistant said in the last 20 s is dropped.
-- **Prompt caps:** last 10 messages, 12k characters of code.
-- **Spend meter** in the copilot header (real token counts from the API), every call appended to
-  `<userData>/usage.jsonl`, and a master **AI on/off** switch.
-
-Headphones remain the best echo fix; the guard is the safety net.
-
-## What costs API credits
-
-| Action | Provider | Rough size |
-| --- | --- | --- |
-| A chat or voice turn | active provider (Anthropic by default) | 1.5–3k tokens in (the prompt includes the whole file), a few hundred out |
-| An Agent chip | active provider | same; diff chips up to 2k out |
-| Ghost text (each pause ≥350 ms while typing) | **Groq** when a Groq key exists, else the active provider | ~800 in / ≤160 out |
-| `npm run smoke` | Anthropic ×3 + Groq ×1 | one run ≈ 10k tokens — don't loop it |
-| Voice STT/TTS | none (local Parakeet; Edge TTS is free) | — |
-
-If a turn fails with `credit balance is too low`, that's the Anthropic prepaid balance, not a rate limit;
-the app logs the exact provider error in `main.log` and shows it in the chat bubble.
-
-## Voice environment notes
-
-- **Use the voiceAgent venv.** `.env` sets `VOICE_PYTHON=D:\Downloads\voiceAgent\.venv\Scripts\python.exe`:
-  that env has onnxruntime-gpu (Parakeet on CUDA, decoder on CPU — the "hybrid" trick from
-  `voiceAgent/bench/common.py`), torch cu124, Kokoro, and (added) `edge-tts`. The system `py -3` falls back to
-  CPU and its Kokoro import is broken (numpy ABI), so don't clear that variable.
-- **Latency measured (2026-09-10, this machine):** Parakeet 86–288 ms per turn, Edge TTS 130–290 ms per
-  sentence once warm (the sidecar warms it at startup; the very first call is ~2–7 s), Smart Turn ~10 ms.
-- **End of turn** is Smart Turn v3.2 (`voice/models/`, copied from voiceAgent) with the filler-word guard;
-  `--max-silence 1200` is the hard fallback. A long ramble becomes several turns — that's intended.
-- **Echo/barge-in:** the mic uses Chromium's echo cancellation. Interrupting is two-stage, ported from
-  `voiceAgent/agent/talk.py`: speech credit accumulates per 32 ms VAD hit (score ≥ 0.6) and only leaks one
-  point per miss; at 3 credits (~100 ms) Ava's volume **ducks** to 25 % (a "mhm" passes and it recovers), at 10
-  (~320 ms) she is **cut** and your words become the next turn. Tune with `--bargein-*`/`--duck-chunks` in
-  `voice/server.py`. Volume slider lives under the mic button. Headphones still help.
-- **You always have precedence.** VAD runs on the mic; ducking/cutting acts on the speaker. If you start
-  talking while the reply is still being generated (no audio yet), the reply is cancelled and your next
-  sentence is merged with the previous one into a single turn (the half-turn is removed from history). If
-  you talk while it's audibly speaking, that's the barge-in above. Smart Turn starts scoring after 350 ms
-  of silence; 1.5 s is the hard end-of-turn.
-- **Read aloud:** the speaker button next to the question title reads the problem through the voice
-  pipeline (no model call). Agent chip results also land in the chat thread and are read out when the mic is on.
-- **Ghost text in comments:** when the caret is in a `#`, `//`, `/* */` or docstring line, the completion
-  is asked for prose that finishes the comment (accurate to the code around it), not code.
-- **Lifecycle:** the sidecar exits on its own when Electron dies (it watches its stdin pipe), so a crashed IDE
-  can't leave a Python process holding the GPU. If you ever suspect one: `netstat -ano -p tcp | findstr 127.0.0.1`
-  and kill the python PID listening there.
-- **speechSynthesis:** Electron exposes 0 OS voices on this machine, so the "Windows voices" engine is inert
-  here; Edge TTS via the sidecar is the working path.
-- HF cache: the sidecar reads `HF_HOME` from the Windows user registry and falls back to `D:\hf-cache\huggingface`.
-
-## Next steps
-
-1. Echo *detection* gate (voiceAgent/agent/echo_gate.py) fed with what the renderer actually played, for open-speaker use.
-2. Kokoro as default when you want fully offline speech (it works in the venv; Edge is faster to first byte).
-3. Real LSP (pyright) for semantic autocomplete beyond Monaco's heuristics and the AI ghost text.
-4. Sandboxing for Run/Submit beyond a temp dir + timeout.
+[Apache License 2.0](LICENSE) © 2026 Anas Nasseur
